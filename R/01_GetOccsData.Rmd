@@ -1,0 +1,243 @@
+---
+title: "物种数据获取与清洗"
+author: "chmzs"
+date: "2022-08-09"
+output: html_document
+bibliography: references.bib
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# 加载包
+
+```{r}
+library(sf)
+library(spocc)
+library(rgbif)
+library(Taxonstand)
+library(CoordinateCleaner)
+library(maps)
+
+```
+
+# 获取Occs数据
+
+可以使用[spocc](https://github.com/ropensci/spocc)软件包（下面有注释）搜索在线数据库，如GBIF；搜索分析对象的 物种属种名 （如 **Juniperus przewalskii**），获取所选物种的记录（带有位置信息的）； 数据库来源有：相关数据介绍可见文档:《生物多样性数据整合与服务研究》[@xuzhépíng2021].
+
+-   'gbif'：最常用，单次获取最高限制为10 000个;
+
+-   'bison'
+
+-   'vertnet'
+
+-   'inat'
+
+-   'ebinrd'
+
+-   'idigbio'
+
+-   'obis'
+
+-   'ala'
+
+
+
+
+```{r 获取地理范围}
+
+# 研究区矩形范围
+## 青藏高原范围
+qtp <- st_read("datas/StudyArea/TPboundaryPolygon.shp")
+
+## 转换为crs 4326
+int <-st_transform(qtp, crs = 4326)
+
+## 四至范围的wkt
+int_wkt <- 'POLYGON((67.67693 25.99165, 104.6826  25.99165, 104.6826  40.01663 ,67.67693 40.01663 ,67.67693 25.99165))'
+```
+
+# 按种级获取
+```{r 物种清单}
+# 需要获取的物种清单
+# 通过Spocc获取单个或多个物种species的数据
+spnames <- c('Pinus tabuliformis', # 油松
+             'Pinus armandii',     # 华山松
+             'Pinus densata',      # 高山松
+             'Pinus yunnanensis',  # 云南松
+             'Pinus gerardiana',   # 西藏白皮松
+             'Pinus roxburghii',   # 西藏长叶松/喜马拉雅长叶松 # nolint
+             'Pinus wallichiana',  # 乔松
+             'Pinus  bhutanica'    # 不丹松
+             )
+```
+
+```{r spocc获取}
+out1 <- spocc::occ(query = 'Pinus tabuliformis', 
+                      from = 'gbif',  
+                      limit = 10000,
+                      geometry = int_wkt,
+                      has_coords = TRUE)
+# 转换为data.frame
+out_df1 <- spocc::occ2df(out1$gbif, what = "data")
+```
+
+# 按属级获取
+```{r 用rgbif获取}
+
+# 获取属的gbif代码
+manta_ray <- rgbif::name_backbone("Pinus")$usageKey
+
+out2 <- rgbif::occ_data(manta_ray, 
+                       geometry = int_wkt, 
+                       limit=10000, 
+                       hasCoordinate = TRUE)
+
+out_df2 <- out2[["data"]] %>% 
+  dplyr::rename(longitude = decimalLongitude, latitude = decimalLatitude)
+```
+
+## 导出原始数据
+
+```{r 导出原始数据}
+
+# 保存预下载的物种数据，可以打开excel查看处理
+readr::write_csv(out_df2,
+                 "datas/Occs/Pinus_gbif_origin_1.csv", 
+                 na = "NA")
+
+```
+
+# 2.检查物种分类
+
+检查一下刚刚搜索的物种名称的唯一条目。
+```{r}
+sort(unique(out_df2$scientificName))
+```
+
+在这种特殊情况下，我们有两个同义词Cariniana brasiliensis和Couratari legalis。
+在 gbif 数据中，已经有taxonomicStatus列显示当前接受的分类法：
+```{r}
+table(out_df2$taxonomicStatus)
+```
+
+让我们使用taxonstand中的函数TPL()来检查 gbif 数据中的分类更新是否正确。此函数接收包含物种列表的向量，并执行正字法和命名法检验。命名检验遵循[The Plant List](http://www.theplantlist.org/)。
+
+我们将首先生成一个具有唯一物种名称的list，并将其与数据相结合。这样我们就不需要多次检验相同的物种名称，并且在处理多个物种的情况下，它将使工作流程更快。
+```{r}
+species.names <- unique(out_df2$scientificName) 
+tax.check <- TPL(species.names)
+```
+
+让我们看下检验结果：
+```{r}
+tax.check
+```
+
+请注意，该函数将几个新变量添加到输入数据并创建列，例如New.Genus和New.Species具有Accepted的名称。如果该列**New.Taxonomic.status**填写“Accepted”，我们应该采用这些名称
+
+我们将合并新的属和种名称，然后将它们添加到原始数据中。
+```{r}
+# creating new object w/ original and new names after TPL
+new.tax <- data.frame(scientificName = species.names, 
+                      genus.new.TPL = tax.check$New.Genus, 
+                      species.new.TPL = tax.check$New.Species,
+                      status.TPL = tax.check$Taxonomic.status,
+                      scientificName.new.TPL = paste(tax.check$New.Genus,                                 tax.check$New.Species)) 
+# now we are merging raw data and checked data
+occs.new.tax <- merge(out_df2, new.tax, by = "scientificName")
+table(occs.new.tax$scientificName.new.TPL)
+```
+
+## 分类检查后导出数据
+为保证所有步骤的文档化，我们将在分类检查后导出数据。
+```{r}
+readr::write_csv(occs.new.tax, 
+          "datas/Occs/data_taxonomy_ check.csv",
+          na = "NA")
+```
+
+3.检查物种坐标
+首先，让我们直观地检查原始数据中的坐标。
+```{r 展示occs}
+occs_sf <- st_as_sf(occs.new.tax, coords = c("longitude", "latitude"), crs = 4326)
+occs_int <- occs_sf[int,]
+mapview::mapview(list(int, occs_int))
+```
+
+```{r 展示occs}
+plot(latitude ~ longitude, data = occs.new.tax)
+map(, , , add = TRUE)
+```
+现在我们将使用CoordinateCleaner包中的函数clean_coordinates()来清理物种记录。此功能检查坐标中的常见错误，例如机构坐标、海洋坐标、异常值、零点、质心等。此功能不能处理“NA”值，因此我们将首先仅选择具有纬度和经度的数值。
+
+注意：此时为每个观察设置一个特定的 ID 代码是必不可少的。原始数据已经在gbifID列中提供了一个 ID 。
+```{r 去经纬度的NA}
+occs.coord <- occs.new.tax[!is.na(occs.new.tax$latitude) 
+                   & !is.na(occs.new.tax$longitude),]
+```
+
+现在我们没有NA的纬度或经度 ，我们可以执行坐标清理。
+```{r 清理坐标byClean}
+# output w/ only potential correct coordinates
+geo.clean <- clean_coordinates(x = occs.coord, 
+                               lon = "longitude",
+                               lat = "latitude",
+                               species = "scientificName.new.TPL", 
+                               value = "clean")
+```
+让我们绘制已清理数据的输出。
+```{r 展示清理结果}
+par(mfrow = c(2, 1))
+plot(latitude ~ longitude, data = occs.new.tax)
+map(, , , add = TRUE)
+plot(latitude ~ longitude, data = geo.clean)
+map(, , , add = TRUE)
+par(mfrow = c(1, 1))
+```
+设置value = clean时，它只返回可能正确的坐标，直接删除错误坐标的行。为了后续检查和可重复性，我们希望将所有输出与例程生成的标志一起保存。让我们尝试不同的输出。
+设置value =“spatialvalid”会新增.summary列（坐标正确记为True，可能错误则记为Flase。）
+```{r 清理坐标bySpatialvalid}
+occs.new.geo <- clean_coordinates(x = occs.coord, 
+                                  lon = "longitude",
+                                  lat = "latitude",
+                                  species = "scientificName.new.TPL", 
+                                  value = "spatialvalid")
+```
+然后，我们将原始数据与清理后的数据合并。
+```{r 合并结果}
+# merging w/ original data
+occs.new.geo2 <- merge(occs.new.tax, occs.new.geo, 
+                       all.x = TRUE, 
+                       by = "key") 
+```
+
+
+```{r 提取QTP范围Occs}
+occs_sf <- st_as_sf(occs.new.geo2, coords = c("longitude.y", "latitude.y"), crs = 4326)
+occs_int <- occs_sf[int,]
+mapview::mapview(list(int, occs_int))
+occs_int_df <- st_drop_geometry(occs_int)
+```
+
+
+```{r 各物种结果}
+table(occs_int_df$scientificName.new.TPL.y)
+```
+
+
+检验坐标后导出数据
+```{r 导出结果}
+readr::write_csv(occs_int_df, 
+          "datas/Occs/Pinus_data_coordinate_check.csv",
+          na = "NA")
+```
+
+
+
+
+
+
+
+

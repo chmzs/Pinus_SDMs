@@ -1,0 +1,1769 @@
+---
+title: "Pinus_Wallce"
+author: "chmzs"
+date: `format(Sys.Date())`
+output: 
+  html_document:
+    df_print: paged
+    toc: yes
+    number_sections: yes
+editor_options: 
+  markdown: 
+    wrap: 72
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE,
+  warning = TRUE,
+  tidy = TRUE,
+  fig.align = "left",
+  fig.width = 8,
+  fig.showtext = TRUE
+)
+```
+
+```{r}
+# 设置一个随机种子，以便能够重现这一分析。
+set.seed(666)
+
+# 运行环境信息
+# readr::write_lines(session_info(), "result/log_text/session_info.txt")
+
+# 设置运行结果记录日志版本，采用时间记录
+time <- format(Sys.Date())
+# 设置当前项目可用最大内存
+memory.limit(25000)
+
+# change the tempdir() location(全局)
+tempdir <- function() "E:/Rtmp"
+unlockBinding("tempdir", baseenv())
+utils::assignInNamespace("tempdir", tempdir, ns = "base", envir = baseenv())
+assign("tempdir", tempdir, baseenv())
+lockBinding("tempdir", baseenv())
+
+# 设置raster缓存文件夹到更大的磁盘
+raster::rasterOptions(tmpdir = "E:/Rtmp")
+terra::terraOptions(tempdir = "E:/Rtmp")
+```
+
+```{r package}
+# 加载包
+# 这里的顺序很重要，因为有些包的函数会覆盖其他包的函数。（名称存在冲突）
+# library(spThin)  # 空间稀疏
+# library(dismo)  # 预测分布，maxent.jar
+library(wallace) # 模型构建与评估
+library(dplyr)
+library(data.table)
+```
+
+# 加载Occs数据
+
+```{r 加载occs}
+# 提取物种、经度、纬度列
+occs <- fread("datas/Occs/Pinus_data_coordinate_check.csv") %>%
+  select(scientificName.new.TPL.y, longitude.x, latitude.x) %>%
+  rename(
+    scientific_name = scientificName.new.TPL.y,
+    longitude = longitude.x,
+    latitude = latitude.x
+  )
+
+# 保存上述的物种数据
+fwrite(occs,
+  "datas/Occs/Pinus_data_coordinate_check_wallace.csv",
+  na = "NA"
+)
+```
+
+```{r 分物种Occs}
+# wallace加载occs
+# 返回结果仅包含具有坐标的记录的子集，删除具有重复坐标的记录，并选择具有适合生物地理学研究的字段的一些列。
+Occs <- occs_userOccs(
+  txtPath = "datas/Occs/Pinus_data_coordinate_check_wallace.csv",
+  txtName = "Pinus_data_coordinate_check_wallace.csv",
+  txtSep = ",",
+  txtDec = "."
+)
+
+# 查看有那些物种
+names(Occs)
+
+# 华山松
+occs_Pa <- Occs$Pinus_armandii$cleaned
+# 高山松
+occs_Pd <- Occs$Pinus_densata$cleaned
+# 云南松
+occs_Py <- Occs$Pinus_yunnanensis$cleaned
+```
+
+### 获取古生物记录Occs
+
+```{r, eval = FALSE, include = FALSE}
+# Query selected database for occurrence records
+paleoDb_Py <- occs_paleoDb(
+  spName = "Pinus yunnanensis",
+  occNum = 55,
+  timeInterval = ""
+)
+occs_Py <- paleoDb_Py$cleaned
+```
+
+# 获取ENvs
+
+```{r 在线envs}
+# geodata::worldclim_global(var = "bio", res = 10, path="datas/current_bio")
+# 新文件重命名
+# bio_file <- list.files("datas/current_bio/wc2.1_10m/", pattern = ".tif$", full.names = T, recursive = T)
+# for (i in 1:length(bio_file)){
+#   newname <- paste0("datas/current_bio/wc2.1_10m/",
+#                     "wc2.1_10m_",
+#                     c("bio01", 
+#                       paste0("bio", 10:19), 
+#                       paste0("bio", sprintf("%02d", 2:9))), 
+#                     ".tif") 
+#   file.rename(bio_file[i], newname[i])
+# }
+
+```
+
+```{r 本地加载envs}
+# 本地加载19个生物气候变量
+# bio_file <- list.files("datas/current_bio/Chelsa_30s/", pattern = ".tif$", full.names = T, recursive = T)
+# 
+# for (i in 1:length(bio_file)){
+#   envs = terra::rast(bio_file[i])
+#   newname = paste0("datas/current_bio/Chelsa_30s/RasterEnvs/",
+#                    paste0('bio', sprintf("%02d", 1:19), ".tif"))
+#   terra::writeRaster(envs, newname[i], overwrite=TRUE)
+# }
+
+bio_file <- list.files("datas/current_bio/Chelsa_30s/RasterEnvs/", pattern = ".tif$", full.names = T, recursive = T)
+
+envs <- bio_file %>%
+  terra::rast() %>% 
+  raster::stack()
+names(envs) <- paste0('bio', sprintf("%02d", 1:19))
+```
+
+
+删除任何没有环境值的occs点（即，未与栅格中数据的网格单元重叠的点）和同一像元的重复occs点
+
+```{r 提取occs_Pa环境值}
+## Add envrionmental values to occurrences table
+occs_xy_Pa <- occs_Pa[c("longitude", "latitude")]
+occs_vals_Pa <- as.data.table(raster::extract(envs, occs_xy_Pa, cellnumbers = TRUE))
+
+# Remove duplicated same cell values
+occs_Pa <- occs_Pa[!duplicated(occs_vals_Pa[, 1]), ]
+occs_vals_Pa <- occs_vals_Pa[!duplicated(occs_vals_Pa[, 1]), -1]
+# remove occurrence records with NA environmental values
+occs_Pa <- occs_Pa[!(rowSums(is.na(occs_vals_Pa)) >= 1), ]
+# also remove variable value rows with NA environmental values
+occs_vals_Pa <- na.omit(occs_vals_Pa)
+# add columns for env variable values for each occurrence record
+occs_Pa <- cbind(occs_Pa, occs_vals_Pa)
+```
+
+```{r 提取occs_Pd环境值}
+## Add envrionmental values to occurrences table
+occs_xy_Pd <- occs_Pd[c("longitude", "latitude")]
+occs_vals_Pd <- as.data.frame(raster::extract(envs, occs_xy_Pd, cellnumbers = TRUE))
+
+# Remove duplicated same cell values
+occs_Pd <- occs_Pd[!duplicated(occs_vals_Pd[, 1]), ]
+occs_vals_Pd <- occs_vals_Pd[!duplicated(occs_vals_Pd[, 1]), -1]
+# remove occurrence records with NA environmental values
+occs_Pd <- occs_Pd[!(rowSums(is.na(occs_vals_Pd)) >= 1), ]
+# also remove variable value rows with NA environmental values
+occs_vals_Pd <- na.omit(occs_vals_Pd)
+# add columns for env variable values for each occurrence record
+occs_Pd <- cbind(occs_Pd, occs_vals_Pd)
+```
+
+```{r 提取occs_Py环境值}
+## Add envrionmental values to occurrences table
+occs_xy_Py <- occs_Py[c("longitude", "latitude")]
+occs_vals_Py <- as.data.frame(raster::extract(envs, occs_xy_Py, cellnumbers = TRUE))
+
+# Remove duplicated same cell values
+occs_Py <- occs_Py[!duplicated(occs_vals_Py[, 1]), ]
+occs_vals_Py <- occs_vals_Py[!duplicated(occs_vals_Py[, 1]), -1]
+# remove occurrence records with NA environmental values
+occs_Py <- occs_Py[!(rowSums(is.na(occs_vals_Py)) >= 1), ]
+# also remove variable value rows with NA environmental values
+occs_vals_Py <- na.omit(occs_vals_Py)
+# add columns for env variable values for each occurrence record
+occs_Py <- cbind(occs_Py, occs_vals_Py)
+```
+
+```{r 按ID清洗}
+# # 根据自主判断，删除不可靠的occs点
+# occs_Pa <- poccs_removeByID(
+#   occs = occs_Pa,
+#   removeID = c()
+# )
+# 
+# occs_Pd <- poccs_removeByID(
+#   occs = occs_Pd,
+#   removeID = c()
+# )
+# 
+# occs_Py <- poccs_removeByID(
+#   occs = occs_Py,
+#   removeID = c()
+# )
+```
+
+## spThin
+
+```{r}
+# Thin occurrences to （大于分辨率的）km
+occs_Pa <- poccs_thinOccs(
+  occs = occs_Pa,
+  thinDist = 1
+)
+
+occs_Pd <- poccs_thinOccs(
+  occs = occs_Pd,
+  thinDist = 1
+)
+
+occs_Py <- poccs_thinOccs(
+  occs = occs_Py,
+  thinDist = 1
+)
+```
+
+## bg采样
+
+```{r Pa的bg采样}
+# Generate background extent
+bgExt_Pa <- penvs_bgExtent(
+  occs = occs_Pa,
+  bgSel = "point buffers",
+  bgBuf = 0.1
+) # 单位为十进制dd,1°大概是120公里
+# Mask environmental data to provided extent
+bgMask_Pa <- penvs_bgMask(
+  occs = occs_Pa,
+  envs = envs,
+  bgExt = bgExt_Pa
+)
+# Sample background points from the provided area
+bgSample_Pa <- penvs_bgSample(
+  occs = occs_Pa,
+  bgMask = bgMask_Pa,
+  bgPtsNum = 18679
+)
+
+# Extract values of environmental layers for each background point
+bgEnvsVals_Pa <- as.data.table(raster::extract(bgMask_Pa, bgSample_Pa))
+## Add extracted values to background points table
+bgEnvsVals_Pa <- cbind(
+  scientific_name = paste0("bg_", "Pinus densata"), bgSample_Pa,
+  occID = NA, year = NA, institution_code = NA, country = NA,
+  state_province = NA, locality = NA, elevation = NA,
+  record_type = NA, bgEnvsVals_Pa
+)
+
+# 可视化bg_envs、occs和bg点
+plot(bgSample_Pa, pch = 20, cex = 0.2)
+points(occs_xy_Pa, pch = 3, col = "red")
+```
+
+```{r Pd的bg采样}
+# Generate background extent
+bgExt_Pd <- penvs_bgExtent(
+  occs = occs_Pd,
+  bgSel = "point buffers",
+  bgBuf = 2
+)
+# Mask environmental data to provided extent
+bgMask_Pd <- penvs_bgMask(
+  occs = occs_Pd,
+  envs = envs,
+  bgExt = bgExt_Pd
+)
+# Sample background points from the provided area
+bgSample_Pd <- penvs_bgSample(
+  occs = occs_Pd,
+  bgMask = bgMask_Pd,
+  bgPtsNum = 10000
+)
+
+# Extract values of environmental layers for each background point
+bgEnvsVals_Pd <- as.data.frame(raster::extract(bgMask_Pd, bgSample_Pd))
+## Add extracted values to background points table
+bgEnvsVals_Pd <- cbind(
+  scientific_name = paste0("bg_", "Pinus densata"), bgSample_Pd,
+  occID = NA, year = NA, institution_code = NA, country = NA,
+  state_province = NA, locality = NA, elevation = NA,
+  record_type = NA, bgEnvsVals_Pd
+)
+
+# 可视化bg_envs、occs和bg点
+plot(bgSample_Pd, pch = 20, cex = 0.2)
+points(occs_xy_Pd, pch = 3, col = "red")
+```
+
+```{r Py的bg采样}
+# Generate background extent
+bgExt_Py <- penvs_bgExtent(
+  occs = occs_Py,
+  bgSel = "point buffers",
+  bgBuf = 2
+)
+# Mask environmental data to provided extent
+bgMask_Py <- penvs_bgMask(
+  occs = occs_Py,
+  envs = envs,
+  bgExt = bgExt_Py
+)
+# Sample background points from the provided area
+bgSample_Py <- penvs_bgSample(
+  occs = occs_Py,
+  bgMask = bgMask_Py,
+  bgPtsNum = 10000
+)
+
+# Extract values of environmental layers for each background point
+bgEnvsVals_Py <- as.data.frame(raster::extract(bgMask_Py, bgSample_Py))
+## Add extracted values to background points table
+bgEnvsVals_Py <- cbind(
+  scientific_name = paste0("bg_", "Pinus densata"), bgSample_Py,
+  occID = NA, year = NA, institution_code = NA, country = NA,
+  state_province = NA, locality = NA, elevation = NA,
+  record_type = NA, bgEnvsVals_Py
+)
+```
+
+## 表征环境空间(Characterize Environmental Space)的多物种分析
+
+### Pa_Pd (*Pinus armandii* and *Pinus densata*)
+
+#### 环境序列分析(Environmental Ordination analysis)
+
+环境排序是为了进行主成分分析（PCA），它旋转多维数据（例如，对于许多变量），以描述显示最高变化的轴的子集。要进行PCA，通过勾选/不勾选生物气候变量，选择两个物种可用的变量。选择 "仅发生率"或 "发生率和背景"作为图的选择，并设置X轴和Y轴的组成部分。PCA散点图出现在结果标签中。[\@Wallace](https://wallaceecomod.github.io/wallace/articles/tutorial-v2.html)
+
+```{r Pa_Pd PCA}
+# 对*Pinus armandii*和*Pinus densata*的环境空间进行PCA分析并绘图，以降低维度。
+# 选择对occsBg进行PCA分析。
+
+# 选择分析的环境变量
+pcaSel_Pa_Pd <- c("bio01", "bio02", "bio03", "bio04", "bio05", "bio06", "bio07", "bio08", "bio09", "bio10", "bio11", "bio12", "bio13", "bio14", "bio15", "bio16", "bio17", "bio18", "bio19")
+
+# Run the pca
+espace_pca_Pa_Pd <- espace_pca(
+  sp.name1 = "Pinus armandii",
+  sp.name2 = "Pinus densata",
+  occs.z1 = occs_Pa[, pcaSel_Pa_Pd],
+  occs.z2 = occs_Pd[, pcaSel_Pa_Pd],
+  bgPts.z1 = bgEnvsVals_Pa[, pcaSel_Pa_Pd],
+  bgPts.z2 = bgEnvsVals_Pd[, pcaSel_Pa_Pd]
+)
+```
+
+```{r Pa_Pd PCA Plot}
+## Generate plots
+# PCA Scatter Plot
+if ("occsBg" == "occs") {
+  x <- espace_pca_Pa_Pd$scores[espace_pca_Pa_Pd$scores$bg == "sp", ]
+  x.f <- factor(x$sp)
+} else if ("occsBg" == "occsBg") {
+  x <- espace_pca_Pa_Pd$scores[espace_pca_Pa_Pd$scores$sp == "bg", ]
+  x.f <- factor(x$bg)
+}
+ade4::s.class(x, x.f,
+  xax = 1, yax = 2,
+  col = c("red", "blue"), cstar = 0, cpoint = 0.1
+)
+
+# PCA Correlation circle
+ade4::s.corcircle(espace_pca_Pa_Pd$co,
+  xax = 1, yax = 2,
+  lab = pcaSel_Pa_Pd, full = FALSE, box = TRUE
+)
+
+# PCA screeplot
+screeplot(espace_pca_Pa_Pd, main = NULL)
+# Print PCA summary of results
+summary(espace_pca_Pa_Pd)
+```
+
+#### Occs密度分布 (Occurrence Density Grid)
+
+计算*Pinus armandii*和*Pinus densata*的环境空间中物种密集分布的部分和背景环境条件的可用性
+
+```{r Pa_Pd Dens}
+# Create density grid
+espace_occDens_Pa_Pd <- espace_occDens(
+  sp.name1 = "Pinus armandii",
+  sp.name2 = "Pinus densata",
+  pca = espace_pca_Pa_Pd
+)
+# Plots
+graphics::par(mfrow = c(1, 2))
+ecospat::ecospat.plot.niche(espace_occDens_Pa_Pd[["Pinus armandii"]],
+  title = "Pinus armandii"
+)
+ecospat::ecospat.plot.niche(espace_occDens_Pa_Pd[["Pinus densata"]],
+  title = "Pinus densata"
+)
+```
+
+#### 生态位重叠度 (Niche overlap)
+
+评估*Pinus armandii*与*Pinus densata*之间的生态位重叠度，并计算出其occurrence density grid。运行equivalence test (FALSE)和similarity test TRUE.
+
+生态位重叠度是基于模块Occurrence Density Grid中估计的可用环境空间中的Occs密度和bg密度。重叠度是用Schoener's D指标进行量化的。
+
+```{r Pa_Pd nicheOv}
+## Run tests
+espace_nicheOv_Pa_Pd <- espace_nicheOv(
+  z1 = espace_occDens_Pa_Pd[["Pinus armandii"]],
+  z2 = espace_occDens_Pa_Pd[["Pinus densata"]],
+  iter = 100,
+  similarity = TRUE
+)
+
+# Plots
+layout(matrix(c(1, 1, 1, 1, 1, 1, 1, 1, 2, 2, 3, 3), 4, 3, byrow = FALSE))
+# layout.show(nf)
+# graphics::par(mfrow = c(1,2))
+ecospat::ecospat.plot.niche.dyn(
+  espace_occDens_Pa_Pd[["Pinus armandii"]],
+  espace_occDens_Pa_Pd[["Pinus densata"]],
+  0.5,
+  title = "Pinus armandii_Pinus densata",
+  col.unf = "blue",
+  col.exp = "red",
+  col.stab = "purple",
+  colZ1 = "blue",
+  colZ2 = "red",
+  transparency = 25
+)
+# Plot
+ecospat::ecospat.plot.overlap.test(
+  espace_nicheOv_Pa_Pd$simil,
+  "D", "Similarity test"
+)
+```
+
+### Pa_Py (*Pinus armandii* and *Pinus yunnanensis*)
+
+#### 环境序列分析(Environmental Ordination analysis)
+
+环境排序是为了进行主成分分析（PCA），它旋转多维数据（例如，对于许多变量），以描述显示最高变化的轴的子集。要进行PCA，通过勾选/不勾选生物气候变量，选择两个物种可用的变量。选择 "仅发生率"或 "发生率和背景"作为图的选择，并设置X轴和Y轴的组成部分。PCA散点图出现在结果标签中。[\@Wallace](https://wallaceecomod.github.io/wallace/articles/tutorial-v2.html)
+
+```{r Pa_Py PCA}
+# 对*Pinus armandii*和*Pinus yunnanensis*的环境空间进行PCA分析并绘图，以降低维度。
+# 选择对occsBg进行PCA分析。
+
+# 选择分析的环境变量
+pcaSel_Pa_Py <- c("bio01", "bio02", "bio03", "bio04", "bio05", "bio06", "bio07", "bio08", "bio09", "bio10", "bio11", "bio12", "bio13", "bio14", "bio15", "bio16", "bio17", "bio18", "bio19")
+
+# Run the pca
+espace_pca_Pa_Py <- espace_pca(
+  sp.name1 = "Pinus armandii",
+  sp.name2 = "Pinus yunnanensis",
+  occs.z1 = occs_Pa[, pcaSel_Pa_Py],
+  occs.z2 = occs_Py[, pcaSel_Pa_Py],
+  bgPts.z1 = bgEnvsVals_Pa[, pcaSel_Pa_Py],
+  bgPts.z2 = bgEnvsVals_Py[, pcaSel_Pa_Py]
+)
+```
+
+```{r Pa_Py PCA Plot}
+## Generate plots
+# PCA Scatter Plot
+if ("occsBg" == "occs") {
+  x <- espace_pca_Pa_Py$scores[espace_pca_Pa_Py$scores$bg == "sp", ]
+  x.f <- factor(x$sp)
+} else if ("occsBg" == "occsBg") {
+  x <- espace_pca_Pa_Py$scores[espace_pca_Pa_Py$scores$sp == "bg", ]
+  x.f <- factor(x$bg)
+}
+ade4::s.class(x, x.f,
+  xax = 1, yax = 2,
+  col = c("red", "blue"), cstar = 0, cpoint = 0.1
+)
+
+# PCA Correlation circle
+ade4::s.corcircle(espace_pca_Pa_Py$co,
+  xax = 1, yax = 2,
+  lab = pcaSel_Pa_Py, full = FALSE, box = TRUE
+)
+
+# PCA screeplot
+screeplot(espace_pca_Pa_Py, main = NULL)
+# Print PCA summary of results
+summary(espace_pca_Pa_Py)
+```
+
+#### Occs密度分布 (Occurrence Density Grid)
+
+计算*Pinus armandii*和*Pinus yunnanensis*的环境空间中物种密集分布的部分和背景环境条件的可用性
+
+```{r Pa_Py Dens}
+# Create density grid
+espace_occDens_Pa_Py <- espace_occDens(
+  sp.name1 = "Pinus armandii",
+  sp.name2 = "Pinus yunnanensis",
+  pca = espace_pca_Pa_Py
+)
+# Plots
+graphics::par(mfrow = c(1, 2))
+ecospat::ecospat.plot.niche(espace_occDens_Pa_Py[["Pinus armandii"]],
+  title = "Pinus armandii"
+)
+ecospat::ecospat.plot.niche(espace_occDens_Pa_Py[["Pinus yunnanensis"]],
+  title = "Pinus yunnanensis"
+)
+```
+
+#### 生态位重叠度 (Niche overlap)
+
+评估*Pinus armandii*与*Pinus yunnanensis*之间的生态位重叠度，并计算出其occurrence density grid。运行equivalence test (FALSE)和similarity test TRUE.
+
+生态位重叠度是基于模块Occurrence Density Grid中估计的可用环境空间中的Occs密度和bg密度。重叠度是用Schoener's D指标进行量化的。
+
+```{r Pa_Py nicheOv}
+## Run tests
+espace_nicheOv_Pa_Py <- espace_nicheOv(
+  z1 = espace_occDens_Pa_Py[["Pinus armandii"]],
+  z2 = espace_occDens_Pa_Py[["Pinus yunnanensis"]],
+  iter = 100,
+  similarity = TRUE
+)
+
+# Plots
+layout(matrix(c(1, 1, 1, 1, 1, 1, 1, 1, 2, 2, 3, 3), 4, 3, byrow = FALSE))
+# layout.show(nf)
+# graphics::par(mfrow = c(1,2))
+ecospat::ecospat.plot.niche.dyn(
+  espace_occDens_Pa_Py[["Pinus armandii"]],
+  espace_occDens_Pa_Py[["Pinus yunnanensis"]],
+  0.5,
+  title = "Pinus armandii_Pinus yunnanensis",
+  col.unf = "blue",
+  col.exp = "red",
+  col.stab = "purple",
+  colZ1 = "blue",
+  colZ2 = "red",
+  transparency = 25
+)
+# Plot
+ecospat::ecospat.plot.overlap.test(
+  espace_nicheOv_Pa_Py$simil,
+  "D", "Similarity test"
+)
+```
+
+### Pd_Py (*Pinus densata* and *Pinus yunnanensis*)
+
+#### 环境排序分析(Environmental Ordination analysis)
+
+环境排序是为了进行主成分分析（PCA），它旋转多维数据（例如，对于许多变量），以描述显示最高变化的轴的子集。要进行PCA，通过勾选/不勾选生物气候变量，选择两个物种可用的变量。选择 "仅发生率"或 "发生率和背景"作为图的选择，并设置X轴和Y轴的组成部分。PCA散点图出现在结果标签中。[\@Wallace](https://wallaceecomod.github.io/wallace/articles/tutorial-v2.html)
+
+```{r Pd_Py PCA}
+# 对*Pinus densata*和*Pinus yunnanensis*的环境空间进行PCA分析并绘图，以降低维度。
+# 选择对occsBg进行PCA分析。
+
+# 选择分析的环境变量
+pcaSel_Pd_Py <- c("bio01", "bio02", "bio03", "bio04", "bio05", "bio06", "bio07", "bio08", "bio09", "bio10", "bio11", "bio12", "bio13", "bio14", "bio15", "bio16", "bio17", "bio18", "bio19")
+
+# Run the pca
+espace_pca_Pd_Py <- espace_pca(
+  sp.name1 = "Pinus densata",
+  sp.name2 = "Pinus yunnanensis",
+  occs.z1 = occs_Pd[, pcaSel_Pd_Py],
+  occs.z2 = occs_Py[, pcaSel_Pd_Py],
+  bgPts.z1 = bgEnvsVals_Pd[, pcaSel_Pd_Py],
+  bgPts.z2 = bgEnvsVals_Py[, pcaSel_Pd_Py]
+)
+```
+
+```{r Pd_Py PCA Plot}
+## Generate plots
+# PCA Scatter Plot
+if ("occsBg" == "occs") {
+  x <- espace_pca_Pd_Py$scores[espace_pca_Pd_Py$scores$bg == "sp", ]
+  x.f <- factor(x$sp)
+} else if ("occsBg" == "occsBg") {
+  x <- espace_pca_Pd_Py$scores[espace_pca_Pd_Py$scores$sp == "bg", ]
+  x.f <- factor(x$bg)
+}
+ade4::s.class(x, x.f,
+  xax = 1, yax = 2,
+  col = c("red", "blue"), cstar = 0, cpoint = 0.1
+)
+
+# PCA Correlation circle
+ade4::s.corcircle(espace_pca_Pd_Py$co,
+  xax = 1, yax = 2,
+  lab = pcaSel_Pd_Py, full = FALSE, box = TRUE
+)
+
+# PCA screeplot
+screeplot(espace_pca_Pd_Py, main = NULL)
+# Print PCA summary of results
+summary(espace_pca_Pd_Py)
+```
+
+#### Occs密度分布 (Occurrence Density Grid)
+
+计算*Pinus armandii*和*Pinus densata*的环境空间中物种密集分布的部分和背景环境条件的可用性
+
+```{r Pd_Py Dens}
+# Create density grid
+espace_occDens_Pd_Py <- espace_occDens(
+  sp.name1 = "Pinus densata",
+  sp.name2 = "Pinus yunnanensis",
+  pca = esPdce_pca_Pd_Py
+)
+# Plots
+graphics::par(mfrow = c(1, 2))
+ecospat::ecospat.plot.niche(esPdce_occDens_Pd_Py[["Pinus densata"]],
+  title = "Pinus densata"
+)
+ecospat::ecospat.plot.niche(esPdce_occDens_Pd_Py[["Pinus yunnanensis"]],
+  title = "Pinus yunnanensis"
+)
+```
+
+#### 生态位重叠度 (Niche overlap)
+
+评估*Pinus densata*与*Pinus yunnanensis*之间的生态位重叠度，并计算出其occurrence density grid。运行equivalence test (FALSE)和similarity test TRUE.
+
+生态位重叠度是基于模块Occurrence Density Grid中估计的可用环境空间中的Occs密度和bg密度。重叠度是用Schoener's D指标进行量化的。
+
+```{r Pd_Py nicheOv}
+## Run tests
+espace_nicheOv_Pd_Py <- espace_nicheOv(
+  z1 = espace_occDens_Pd_Py[["Pinus densata"]],
+  z2 = espace_occDens_Pd_Py[["Pinus yunnanensis"]],
+  iter = 100,
+  similarity = TRUE
+)
+
+# Plots
+layout(matrix(c(1, 1, 1, 1, 1, 1, 1, 1, 2, 2, 3, 3), 4, 3, byrow = FALSE))
+# layout.show(nf)
+# graphics::par(mfrow = c(1,2))
+ecospat::ecospat.plot.niche.dyn(
+  espace_occDens_Pd_Py[["Pinus densata"]],
+  espace_occDens_Pd_Py[["Pinus yunnanensis"]],
+  0.5,
+  title = "Pinus armandii_Pinus yunnanensis",
+  col.unf = "blue",
+  col.exp = "red",
+  col.stab = "purple",
+  colZ1 = "blue",
+  colZ2 = "red",
+  transparency = 25
+)
+# Plot
+ecospat::ecospat.plot.overlap.test(
+  espace_nicheOv_Pd_Py$simil,
+  "D", "Similarity test"
+)
+```
+
+## Partition Occurrences
+
+### 理论
+
+理论上，模型评估需要独立数据集来测试模型的预测能力。
+
+当不存在独立的数据集时，一种解决方案是将现有数据集划分成自认为是相互独立的子集，然后依次(子集个数)保留1个子集来评估模型性能，将剩余子集参与模型构建。这被称为k-fold交叉验证（其中k是子集的总数，或称 "folds"），在统计学中相当普遍，特别是在机器学习和数据科学领域。在这个连续的模型建立工作完成后，Wallace会对所有依次迭代的模型统计平均性能，选择性能最佳 模型参数设置，然后再用整个数据集建立一个最终模型。
+
+有一整套文献阐述模型评估数据如何最优地划分。
+
+> 一种方案是简单地随机划分，但对于各组之间在空间上不相互独立空间数据，这存在风险（**？什么样的风险**）。 \>然而对于样本量较小的物种，推荐使用 jackknife 方法（"留一法",留一个点数据做评估），（Gerstner 等人，2018）曾用此方法于对 Bassaricyon neblina 进行建模，不过计算时间可能很长。
+
+> 另一种方案是空间划分；例如，通过在地图上画线来划分数据。具有k-fold交叉验证的空间分区方法迫使模型区预测与用于训练模型的区域相距甚远的区域（注意，Wallace同时也排除了被保留分区对应的区域的背景点）。对于Bassaricyon alleni物种来说，哥伦比亚和厄瓜多尔的环境条件可能与玻利维亚的条件有很大的不同。如果模型在被保留的空间分区数据上也具有均衡准确的预测，则该模型可能具有良好的可转移性，这意味着该模型可以很好地转移到预测变量的新值上（因为远处的地区通常比近处的地区环境差异更大）。 与往常一样，有关 Wallace 中提供的所有分区类型的更多详细信息，请参阅指导文本。
+
+### 函数实现方法
+
+`wallace::part_partitionOccs()`函数 
+
+- `method`参数用于指定分区方法(5种) 
+- 'jack' 非空间分区 - jackknife 
+- 'rand' 非空间分区 - random k-fold 
+- 'block' 空间分区 - block - 'cb1' 空间分区 
+- checkerboard 1 (K=2) 
+- 'cb2' 空间分区 - checkerboard 2 (K=4)
+
+-   参数`kfolds`为数字。如果所选方法`method`='rand'(即random k-fold），则必须指定分区数 (须k \>=2)。如果是其他方法，则保持默认值为 NULL。
+
+-   参数`aggFact`： 使用checkerboard时要使用的聚合因子数(必须\>= 1)。
+
+-   参数`bgMask`: 使用checkerboard时要指定bg范围栅格
+
+### （1）non-spatial partition
+
+```{r Pa non_spat_part}
+# R code to get partitioned data
+groups_Pa <- part_partitionOccs(
+  occs = occs_Pa,
+  bg = bgSample_Pa, # bg点坐标
+  method = "rand",
+  kfolds = 4,
+  # bgMask = bgMask_Pa,
+  # aggFact = 2,
+  # spN = "Pinus armandii"
+)
+
+
+```
+
+### （2）spatial partition method with 4 partitions
+
+```{r Pd spat_part_block}
+# R code to get partitioned data
+groups_Pd <- part_partitionOccs(
+  occs = occs_Pd,
+  bg = bgSample_Pd,
+  method = "block",
+  kfolds = # 只能分4组
+  )
+```
+
+```{r Pa spat_part_cb2}
+# R code to get partitioned data
+groups_Pa <- part_partitionOccs(
+  occs = occs_Pa,
+  bg = bgSample_Pa,
+  method = "block",
+  bgMask = bgMask_Pa, # 需要栅格
+  # aggFact = 2 # 大小影响还不明确
+)
+```
+
+## 构建模型
+
+### BioClim
+
+```{r, echo = FALSE, include = FALSE}
+# Run bioclim model for the selected species
+model_Py <- model_bioclim(
+  occs = occs_Py,
+  bg = bgEnvsVals_Py,
+  user.grp = groups_Py,
+  bgMsk = bgMask_Py
+)
+```
+
+### Maxent
+
+用Maxent建立物种分布模型。Maxent是一种机器学习方法，它可以将一系列函数与数据中的模式相匹配，从简单的（即直线）到复杂的（即曲线可能会改变方向的线条；如果不控制复杂性，线条会变成锯齿状）。有关 Maxent 的更多详细信息，请参阅[Maxent 网站](https://biodiversityinformatics.amnh.org/open_source/maxent/)和Wallace shiny中的guidance text。
+
+- 函数`model_maxent()`:使用ENMeval 2.0和用户自主调整参数生成maxent.jar或maxnet模型。返回一个ENMevaluate对象，包含所有已评估的模型和适当的字段选择。
+-   `algMaxent`参数：Maxent 可以通过`maxnet`包或借助Java 运行的`maxent.jar`；
+-   特征类(feature classes)
+    -   L = Linear，例如 x~1~ + x~2~
+    -   Q = Quadratic，例如 x~1~^2^ + x~1~^2^
+    -   H = Hinge，例如分段线性函数，如样条曲线（想想一系列连接在一起的线）
+    - p = product
+    - t = threshold
+- regularization multipliers
+    - 正则化是对模型复杂度的一种惩罚。
+    - 更高的值=更平滑、更不复杂的模型。基本上，所有的预测变量系数都是逐步缩小的，当趋近于0时，变量就退出模型。只有那些具有最大预测贡献的变量留在模型中。
+- `clampSel`:**推荐**设置为 "TRUE"。这将钳制模型的预测（即把出现的**比参与训练bg背景数据集更极端**的环境值，控制在bg背景数据的值域内）。避免对训练背景数据范围之外的环境值进行极端预测。
+- ENMevaluate()的clamp.directions
+named list: specifies the direction ("left" for minimum, "right" for maximum) of clamping for predictor variables -- (e.g., list(left = c("bio1","bio5"), right = c("bio10","bio15"))).
+Generating a species distribution model using the `r 'maxnet'` algorithm as implemented in ENMeval V2.0 (with clamping = `r TRUE`). For tuning using `r  'L'` feature classes and regularization multipliers in the `r c(1, 2)` range increasing by `r  1`. Not using any categorical predictor variables.
+
+```{r Pa_Maxnet}
+# Run maxent model for the selected species
+model_Pa <- model_maxent(
+  occs = occs_Pa,
+  bg = bgEnvsVals_Pa,
+  user.grp = groups_Pa,
+  bgMsk = bgMask_Pa,
+  rms = c(1, 5),
+  rmsStep = 1,
+  fcs = c("L","LQ","H", "LQH"),
+  clampSel = TRUE, # 是否钳制预测
+  algMaxent = "maxnet",
+  catEnvs = , # 分类变量名
+  parallel = FALSE, # 并行运算
+  numCores = 6 # 并行运算调用的核心数
+)
+```
+
+```{r Pd Maxent.jar}
+# Run maxent model for the selected species
+model_Pd <- model_maxent(
+  occs = occs_Pd,
+  bg = bgEnvsVals_Pd,
+  user.grp = groups_Pd,
+  bgMsk = bgMask_Pd,
+  rms = c(1, 5),
+  rmsStep = 1,
+  fcs = c("L","LQ","H", "LQH"),
+  clampSel = TRUE,
+  algMaxent = "maxent.jar",
+  catEnvs = ,
+  parallel = TRUE,
+  numCores = 7
+)
+```
+
+### 选择最佳模型
+
+关于这个问题有很多文献，而且对于所有的数据集来说，确实没有单一的答案。我们计算了模型性能统计各分区中的AUC（Area Under the Curve）、OR（Omission Rate）和CBI（Continuous Boyce Index）并取平均值；而AICc（corrected Akaike information criterion）则是使用全部background范围（和所有thined的Occs点）数据的预测模型来计算的。尽管**AICc没有包含交叉验证的结果，但它确实明确地惩罚了模型的复杂性**--因此，参数较多的模型往往会有较低的AICc值。
+
+最终评价指标是由用户来决定的，指导文本中有一些参考资料，应该可以帮助你了解更多。
+
+评价指标表可以进行排序。首先，我们将优先考虑交叉验证时在预测区域内遗漏很少Occs点的模型。将结果表按 **"or.10p.avg "**升序排序，即对（不公开的）验证数据应用10分位数的训练presence阈值时的the average omission rate （详见指导文本）。由于我们希望一个模型在进行时空范围预测时不会遗漏很多被保留的Occs数据集点，我们**优先考虑 "or.10p.avg "的低值**。
+
+>选择指标：优先看 "or.10p.avg "的低值；然后看平均验证AUC值（值越高越好）；delta.AICc < 2 或AICc（值越低越好）
+
+```{r}
+# 构建模型的Occs数据和bg数据
+ENMeval::eval.occs(model_Pa) %>% head()
+
+ENMeval::eval.occs(model_Pa) %>% head()
+```
+
+```{r}
+model_Pa@results
+model_Pa@results.partitions
+```
+Pa模型参数选择了`r opt_seq_Pa$tune.args`
+```{r 模型选择指标}
+opt_seq_Pa <- model_Pa@results %>%
+  filter(or.10p.avg == min(or.10p.avg)) %>%
+  filter(auc.val.avg == max(auc.val.avg)) %>%
+  filter(delta.AICc < 2)
+opt_seq_Pa
+
+opt_seq_Pd <- model_Pd@results %>%
+  filter(or.10p.avg == min(or.10p.avg)) %>%
+  filter(auc.val.avg == max(auc.val.avg)) %>%
+  filter(delta.AICc < 2)
+opt_seq_Pd
+
+opt_seq_Py <- model_Py@results %>%
+  filter(or.10p.avg == min(or.10p.avg)) %>%
+  filter(auc.val.avg == max(auc.val.avg)) %>%
+  filter(delta.AICc < 2)
+opt_seq_Py
+```
+
+```{r max模型选择}
+m_Pa <- model_Pa@models[[opt_seq_Pa$tune.args]]
+m_Pd <- model_Pd@models[[opt_seq_Pd$tune.args]]
+```
+
+# 可视化统计结果
+
+## vis_bioclimPlot
+
+```{r bioclimPlot}
+# Generate a bioclim plot
+vis_bioclimPlot_Pnsgrr <- vis_bioclimPlot(
+  x = model_Pnsgrr@models$bioclim,
+  a = ,
+  b = ,
+  p =
+  )
+```
+
+
+
+## Vis_maxentEvalPlot
+
+```{r max_EvalPlot}
+# 可以用ggplot facetting一次绘制多个统计数字。
+maxentEvalPlot_Pa <- ENMeval::evalplot.stats(
+  e = model_Pa,
+  stats = c("or.10p", "auc.val", "cbi.val"),
+  color = "fc",
+  x.var = "rm",
+  error.bars = T,
+  dodge = 0.5
+)
+# maxentEvalPlot_Pd <- ENMeval::evalplot.stats(e = model_Pd,
+#                                              stats = c("or.10p", "auc.val", "cbi.val"),
+#                                              color = "rm", x.var = "fc",
+#
+#                                              error.bars = FALSE)
+maxentEvalPlot_Pa
+# maxentEvalPlot_Pd
+```
+
+## 变量响应曲线
+
+*响应曲线*显示了预测的适宜性（Y轴）如何根据每个变量（X轴）的不同值而变化。对于这些曲线，显示的是一个**变量的边际响应，而其他变量则保持在它们的平均值**。
+
+```{r Pa变量系数}
+m_Pa$betas # Pa模型中的非零系数
+```
+
+```{r 响应曲线maxnet}
+# Pa模型中系数不为零的预测变量的边际响应曲线。我们将y轴定义为cloglog转换，它是由0和1约束的发生概率的近似值（有假设）(Phillips et al. 2017)。
+plot(mod_seq_Pa, type = "cloglog")
+```
+
+```{r}
+# 上面的plot()函数绘制了图形定制，在同一页上包括多个图。
+# 清除图形设备以避免用这些设置绘制连续的图。
+dev.off()
+```
+
+```{r maxent.jar无变量系数}
+# m_Pd$  # Pd模型中的非零系数
+```
+
+```{r 响应曲线maxent.jar}
+dismo::response(model_Pd@models[[opt_seq_Pd$tune.args]])
+```
+
+## Vis_map_Bioclim_cloglog
+
+```{r predict}
+# Select current model and obtain raster prediction
+predSel_Pa <- dismo::predict(m_Pa, bgMask_Pa, useC = FALSE)
+```
+
+
+```{r cloglog}
+# Get values of prediction
+mapPredVals_Pa <- getRasterVals(predSel_Pa, "cloglog")
+# Define colors and legend
+rasCols <- c("#2c7bb6", "#abd9e9", "#ffffbf", "#fdae61", "#d7191c")
+legendPal <- colorNumeric(rev(rasCols), mapPredVals_Pa, na.color = "transparent")
+rasPal <- colorNumeric(rasCols, mapPredVals_Pa, na.color = "transparent")
+# Generate map
+m <- leaflet() %>% addProviderTiles(providers$Esri.WorldTopoMap)
+m %>%
+  leaflet::addLegend("bottomright",
+    pal = legendPal,
+    title = "Predicted Suitability<br>(Training)",
+    values = mapPredVals_Pa, layerId = "train",
+    labFormat = reverseLabel(2, reverse_order = TRUE)
+  ) %>%
+  # add occurrence data
+  addCircleMarkers(
+    data = occs_Pa, lat = ~latitude, lng = ~longitude,
+    radius = 5, color = "red", fill = TRUE, fillColor = "red",
+    fillOpacity = 0.2, weight = 2, popup = ~pop
+  ) %>%
+  ## Add model prediction
+  addRasterImage(predSel_Pa,
+    colors = rasPal, opacity = 0.7,
+    group = "vis", layerId = "mapPred", method = "ngb"
+  ) %>%
+  ## add background polygons
+  addPolygons(
+    data = bgExt_Pa, fill = FALSE,
+    weight = 4, color = "blue", group = "proj"
+  )
+```
+
+
+```{r logistics}
+# determine the threshold based on the current prediction
+occPredVals_Pa <- raster::extract(predSel_Pa, occs_xy_Pa)
+# Define probability of quantile based on selected threshold
+thresProb_Pa <- switch("none",
+  "mtp" = 0,
+  "p10" = 0.1,
+  "qtp" =
+  )
+# Define threshold value
+thres_Pa <- stats::quantile(occPredVals_Pa,
+  probs = thresProb_Pa
+)
+# Applied selected threshold
+predSel_Pa <- predSel_Pa > thres_Pa
+# Get values of prediction
+mapPredVals_Pa <- getRasterVals(predSel_Pa, "cloglog")
+# Define colors and legend
+rasCols <- c("#2c7bb6", "#abd9e9", "#ffffbf", "#fdae61", "#d7191c")
+legendPal <- colorNumeric(rev(rasCols), mapPredVals_Pa, na.color = "transparent")
+rasPal <- c("gray", "blue")
+# Generate map
+m <- leaflet() %>% addProviderTiles(providers$Esri.WorldTopoMap)
+m %>%
+  leaflet::addLegend("bottomright",
+    colors = c("gray", "blue"),
+    title = "Thresholded Suitability<br>(Training)",
+    labels = c("predicted absence", "predicted presence"),
+    opacity = 1, layerId = "train"
+  ) %>%
+  # add occurrence data
+  addCircleMarkers(
+    data = occs_Pa, lat = ~latitude, lng = ~longitude,
+    radius = 5, color = "red", fill = TRUE, fillColor = "red",
+    fillOpacity = 0.2, weight = 2, popup = ~pop
+  ) %>%
+  ## Add model prediction
+  addRasterImage(predSel_Pa,
+    colors = rasPal, opacity = 0.7,
+    group = "vis", layerId = "mapPred", method = "ngb"
+  ) %>%
+  ## add background polygons
+  addPolygons(
+    data = bgExt_Pa, fill = FALSE,
+    weight = 4, color = "blue", group = "proj"
+  )
+```
+
+## Vis_map_Maxent.jar
+
+```{r predict}
+# Select current model and obtain raster prediction
+predSel_Pd <- dismo::predict(
+  m_Pd, bgMask_Pd,
+  args = c(
+    paste0("outputformat=", "cloglog"),
+    paste0("doclamp=", tolower(as.character(TRUE)))
+  ),
+  na.rm = TRUE
+)
+```
+
+
+```{r cloglog}
+# Get values of prediction
+mapPredVals_Pd <- getRasterVals(predSel_Pd, "cloglog")
+# Define colors and legend
+rasCols <- c("#2c7bb6", "#abd9e9", "#ffffbf", "#fdae61", "#d7191c")
+legendPal <- colorNumeric(rev(rasCols), mapPredVals_Pd, na.color = "transparent")
+rasPal <- colorNumeric(rasCols, mapPredVals_Pd, na.color = "transparent")
+# Generate map
+m <- leaflet() %>% addProviderTiles(providers$Esri.WorldTopoMap)
+m %>%
+  leaflet::addLegend("bottomright",
+    pal = legendPal,
+    title = "Predicted Suitability<br>(Training)",
+    values = mapPredVals_Pd, layerId = "train",
+    labFormat = reverseLabel(2, reverse_order = TRUE)
+  ) %>%
+  # add occurrence data
+  addCircleMarkers(
+    data = occs_Pd, lat = ~latitude, lng = ~longitude,
+    radius = 5, color = "red", fill = TRUE, fillColor = "red",
+    fillOpacity = 0.2, weight = 2, popup = ~pop
+  ) %>%
+  ## Add model prediction
+  addRasterImage(predSel_Pd,
+    colors = rasPal, opacity = 0.7,
+    group = "vis", layerId = "mapPred", method = "ngb"
+  ) %>%
+  ## add background polygons
+  addPolygons(
+    data = bgExt_Pd, fill = FALSE,
+    weight = 4, color = "blue", group = "proj"
+  )
+```
+
+```{r logistics}
+# determine the threshold based on the current prediction
+occPredVals_Pd <- raster::extract(predSel_Pd, occs_xy_Pd)
+
+# Define probability of quantile based on selected threshold
+thresProb_Pd <- switch("qtp", # 自定义阈值条件
+  "mtp" = 0,
+  "p10" = 0.1,
+  "qtp" = 0.2
+)
+
+# Define threshold value
+thres_Pa <- stats::quantile(occPredVals_Pd, probs = thresProb_Pd)
+# Applied selected threshold
+predSel_Pd <- predSel_Pa > thres_Pd
+# Get values of prediction, type:"raw", "logistic" or "cloglog"
+mapPredVals_Pd <- getRasterVals(predSel_Pd, "logistic")
+
+# Define colors and legend
+rasCols <- c("#2c7bb6", "#abd9e9", "#ffffbf", "#fdae61", "#d7191c")
+legendPal <- colorNumeric(rev(rasCols), mapPredVals_Pd, na.color = "transparent")
+rasPal <- c("gray", "blue")
+# Generate map
+m <- leaflet() %>% addProviderTiles(providers$Esri.WorldTopoMap)
+m %>%
+  leaflet::addLegend("bottomright",
+    colors = c("gray", "blue"),
+    title = "Thresholded Suitability<br>(Training)",
+    labels = c("predicted absence", "predicted presence"),
+    opacity = 1, layerId = "train"
+  ) %>%
+  # add occurrence data
+  addCircleMarkers(
+    data = occs_Pd, lat = ~latitude, lng = ~longitude,
+    radius = 5, color = "red", fill = TRUE, fillColor = "red",
+    fillOpacity = 0.2, weight = 2, popup = ~pop
+  ) %>%
+  ## Add model prediction
+  addRasterImage(predSel_Pd,
+    colors = rasPal, opacity = 0.7,
+    group = "vis", layerId = "mapPred", method = "ngb"
+  ) %>%
+  ## add background polygons
+  addPolygons(
+    data = bgExt_Pd, fill = FALSE,
+    weight = 4, color = "blue", group = "proj"
+  )
+```
+
+
+
+## Vis_map_Maxnet
+
+```{r predict}
+# Select current model and obtain raster prediction
+predSel_Pa <- predictMaxnet(m_Pa, bgMask_Pa,
+  type = "cloglog",
+  clamp = TRUE
+)
+```
+
+
+```{r cloglog}
+# Get values of prediction
+mapPredVals_Pa <- getRasterVals(predSel_Pa, "cloglog")
+# Define colors and legend
+rasCols <- c("#2c7bb6", "#abd9e9", "#ffffbf", "#fdae61", "#d7191c")
+legendPal <- colorNumeric(rev(rasCols), mapPredVals_Pa, na.color = "transparent")
+rasPal <- colorNumeric(rasCols, mapPredVals_Pa, na.color = "transparent")
+# Generate map
+m <- leaflet() %>% addProviderTiles(providers$Esri.WorldTopoMap)
+m %>%
+  leaflet::addLegend("bottomright",
+    pal = legendPal,
+    title = "Predicted Suitability<br>(Training)",
+    values = mapPredVals_Pa, layerId = "train",
+    labFormat = reverseLabel(2, reverse_order = TRUE)
+  ) %>%
+  # add occurrence data
+  addCircleMarkers(
+    data = occs_Pa, lat = ~latitude, lng = ~longitude,
+    radius = 5, color = "red", fill = TRUE, fillColor = "red",
+    fillOpacity = 0.2, weight = 2, popup = ~pop
+  ) %>%
+  ## Add model prediction
+  addRasterImage(predSel_Pa,
+    colors = rasPal, opacity = 0.7,
+    group = "vis", layerId = "mapPred", method = "ngb"
+  ) %>%
+  ## add background polygons
+  addPolygons(
+    data = bgExt_Pa, fill = FALSE,
+    weight = 4, color = "blue", group = "proj"
+  )
+```
+
+```{r logistics}
+# extract the suitability values for all occurrences
+# determine the threshold based on the current prediction
+occPredVals_Pa <- raster::extract(predSel_Pa, occs_xy_Pa)
+
+# Define probability of quantile based on selected threshold
+thresProb_Pa <- switch("p10",
+  "mtp" = 0,
+  "p10" = 0.1,
+  "qtp" =
+  )
+# Define threshold value
+thres_Pa <- stats::quantile(occPredVals_Pa, probs = thresProb_Pa)
+# Applied selected threshold
+predSel_Pa <- predSel_Pa > thres_Pa
+
+# Get values of prediction
+mapPredVals_Pa <- getRasterVals(predSel_Pa, "logistic")
+# Define colors and legend
+rasCols <- c("#2c7bb6", "#abd9e9", "#ffffbf", "#fdae61", "#d7191c")
+legendPal <- colorNumeric(rev(rasCols), mapPredVals_Pa, na.color = "transparent")
+rasPal <- c("gray", "blue")
+# Generate map
+m <- leaflet() %>% addProviderTiles(providers$Esri.WorldTopoMap)
+m %>%
+  leaflet::addLegend("bottomright",
+    colors = c("gray", "blue"),
+    title = "Thresholded Suitability<br>(Training)",
+    labels = c("predicted absence", "predicted presence"),
+    opacity = 1, layerId = "train"
+  ) %>%
+  # add occurrence data
+  addCircleMarkers(
+    data = occs_Pa, lat = ~latitude, lng = ~longitude,
+    radius = 5, color = "red", fill = TRUE, fillColor = "red",
+    fillOpacity = 0.2, weight = 2, popup = ~pop
+  ) %>%
+  ## Add model prediction
+  addRasterImage(predSel_Pa,
+    colors = rasPal, opacity = 0.7,
+    group = "vis", layerId = "mapPred", method = "ngb"
+  ) %>%
+  ## add background polygons
+  addPolygons(
+    data = bgExt_Pa, fill = FALSE,
+    weight = 4, color = "blue", group = "proj"
+  )
+```
+
+## 模型时空迁移模拟
+
+将模型迁移到新的地点和过去/未来的气候情景中。"transferring "仅仅意味着使用新环境值（即未用于模型构建的那些）用选定的模型进行预测，并获得对新的
+变量范围的适宜性预测。注意：这也可以被称为 "projecting(投射 )"模型，但不要将其与GIS术语"投影“混淆。
+
+使用的交叉验证步骤也转移到新的条件，两者可能会混淆。空间交叉验证步骤迭代地迫使模型预测到新的区域（因此可能是新的环境），评估、统计总结了特定模型参数设置而对模型准确迁移的能力的影响。**然而，我们用来进行预测的最终模型是用所有的数据建立的（它没有排除任何分区组或它们对应的地理区域）**。因此，与我们数据集中所有背景点相关的变量范围都被用于模型建立过程中。
+
+而模型迁移时指将模型迁移到可能用于模型构建时的变量范围之外。因此，不同地点和时段下这些环境值对模型来说可能是全新的，甚至完全不同，以至于无法确信预测的准确性。这是因为虽然建模的变量响应保持不变，但是对**比训练数据有更极端的变量值的预测会导致意外的适宜性预测。**。出于这个原因，钳制clamping推荐启用，通常用于约束模型迁移（见下文）。有关这些“非模拟条件(non-analog conditions)”的更多信息，请参阅指导文本。
+
+### GCM模型(global circulation model)
+
+-   bcAOGCM:大气和海洋全球环流模型的名称。选项有："CCSM"、"CNRM"、"MIROC"、"FGOALS"、"GISS"、"IPSL"、"MRI"、"MPI"
+
+-   bcScenario:选择要下载的时间方案。选项有："LGM"（21,000 年前）、"Holo"（6,000 年前）、"Present"、"Future 2.6"（rcp 2.6）、"Future 4.5"（rcp 4.5）、"Future 6"（rcp 6） ), "未来 8.5" (rcp 8.5)
+
+-   ecoClimSel:带有要选择的变量列表的Numeric vector。
+
+```{r PaleoEnvs}
+varsEcoClimate <- envs_ecoClimate(bcAOGCM, bcScenario, ecoClimSel)
+```
+
+```{r 自定义Envs数据}
+## Specify the directory with the environmental variables
+dir_envsXf_Py <- ""
+envsXf_path <- file.path(dir_envsXf_Py, c())
+# Load user environmental variables
+xferUserEnvs_Py <- envs_userEnvs(
+  rasPath = envsXf_path,
+  rasName = c()
+)
+```
+
+## 模拟新范围
+
+```{r QTP_Ext}
+xferExt <- sf::st_read("datas/StudyArea/TP_face_4326.shp")
+```
+
+xferExt和xferArea。第一个是一个RasterBrick或一个RasterStack的环境变量裁剪到传输区域。第二个元素是具有指定输出类型的已迁移模型的栅格。
+
+```{r xferArea}
+# Transfer model
+xfer_area_Pa <- xfer_area(
+  evalOut = model_Pa,
+  curModel = "fc.L_rm.1",
+  envs = envs,
+  xfExt = xferExt,
+  alg = "maxnet",
+  outputType = "cloglog",
+  clamp = TRUE
+)
+
+# store the cropped variables of transfer
+xferExt_Pa_QTP <- xfer_area_Pa$xferExt
+
+# 色带
+cl <- c("#FDE725", "#B3DC2B", "#6DCC57", "#36B677", "#1F9D87", "#25818E", "#30678D", "#3D4988", "#462777", "#440154")
+plot(xfer_area_Pa$xferArea, col = cl)
+```
+
+```{r cloglog}
+### Make map of transfer
+bb_Pa <- bgExt_Pa@bbox
+bbZoom <- polyZoom(bb_Pa[1, 1], bb_Pa[2, 1], bb_Pa[1, 2],
+  bb_Pa[2, 2],
+  fraction = 0.05
+)
+mapXferVals_Pa <- getRasterVals(xfer_area_Pa$xferArea, "cloglog")
+rasCols_Pa <- c("#2c7bb6", "#abd9e9", "#ffffbf", "#fdae61", "#d7191c")
+# if no threshold specified
+legendPal <- colorNumeric(rev(rasCols_Pa), mapXferVals_Pa, na.color = "transparent")
+rasPal_Pa <- colorNumeric(rasCols_Pa, mapXferVals_Pa, na.color = "transparent")
+m <- leaflet() %>% addProviderTiles(providers$Esri.WorldTopoMap)
+m %>%
+  fitBounds(bbZoom[1], bbZoom[2], bbZoom[3], bbZoom[4]) %>%
+  leaflet::addLegend("bottomright",
+    pal = legendPal,
+    title = "Predicted Suitability<br>(Transferred)",
+    values = mapXferVals_Pa, layerId = "xfer",
+    labFormat = reverseLabel(2, reverse_order = TRUE)
+  ) %>%
+  # map model prediction raster and polygon of transfer
+  clearMarkers() %>%
+  clearShapes() %>%
+  removeImage("xferRas") %>%
+  addRasterImage(xfer_area_Pa$xferArea,
+    colors = rasPal_Pa, opacity = 0.7,
+    layerId = "xferRas", group = "xfer", method = "ngb"
+  ) %>%
+  ## add polygon of transfer (same modeling area)
+  addPolygons(
+    data = xferExt, fill = FALSE,
+    weight = 4, color = "blue", group = "xfer"
+  )
+```
+
+```{r logitics}
+# Define probability of quantile based on selected threshold
+xfer_thresProb_Pa <- switch("p10",
+  "mtp" = 0,
+  "p10" = 0.1,
+  "qtp" =
+  )
+# Define threshold value
+xfer_thres_Pa <- stats::quantile(occPredVals_Pa,
+  probs = xfer_thresProb_Pa
+)
+
+# Add threshold if specified
+xfer_area_Pa <- xfer_area_Pa$xferArea > xfer_thres_Pa
+
+## Make map
+### Make map of transfer
+bb_Pa <- bgExt_Pa@bbox
+bbZoom <- polyZoom(bb_Pa[1, 1], bb_Pa[2, 1], bb_Pa[1, 2],
+  bb_Pa[2, 2],
+  fraction = 0.05
+)
+mapXferVals_Pa <- getRasterVals(xfer_area_Pa, "logitics")
+
+# if threshold specified
+rasPal_Pa <- c("gray", "red")
+m <- leaflet() %>% addProviderTiles(providers$Esri.WorldTopoMap)
+m %>%
+  fitBounds(bbZoom[1], bbZoom[2], bbZoom[3], bbZoom[4]) %>%
+  leaflet::addLegend("bottomright",
+    colors = c("gray", "red"),
+    title = "Thresholded Suitability<br>(Transferred)",
+    labels = c("predicted absence", "predicted presence"),
+    opacity = 1, layerId = "xfer"
+  ) %>%
+  # map model prediction raster and transfer polygon
+  clearMarkers() %>%
+  clearShapes() %>%
+  removeImage("xferRas") %>%
+  addRasterImage(xfer_area_Pa,
+    colors = rasPal_Py, opacity = 0.7,
+    layerId = "xferRas", group = "xfer", method = "ngb"
+  ) %>%
+  ## add transfer polygon (user drawn area)
+  addPolygons(
+    data = xferExt, fill = FALSE,
+    weight = 4, color = "blue", group = "xfer"
+  )
+```
+
+MESS:计算环境相似度;
+在迁移模型时，我们新的环境值范围内的某些区域的预测可能具有很高的不确定性，因为它们与模型构建中使用的环境值非常不同。为了可视化这些区域的位置，可通过计算环境相似度, 绘制 MESS 图。MESS 代表 (M)ultivariate (E)nvironmental (S)imilarity (S)urface，该地图显示了与参与模型构建的训练数据的环境差异的连续尺度，其中增加的正值意味着更相似（*蓝色*） , 和减少负值意味着更多的不同（*红色*）；有关详细信息，请参阅模块指导文本。
+
+```{r MESS_QTP}
+# R code to generate MESS raster
+xferMess_Pa <- xfer_mess(
+  occs = occs_Pa,
+  bg = bgEnvsVals_Pa,
+  bgMsk = bgMask_Pa,
+  xferExtRas = xferExt_Pa_QTP
+)
+
+# Generate MESS map
+rasVals_Pa <- getRasterVals(xferMess_Pa)
+
+# define colorRamp for mess
+if (max(rasVals_Pa) > 0 & min(rasVals_Pa) < 0) {
+  rc1 <- colorRampPalette(
+    colors = rev(RColorBrewer::brewer.pal(n = 3, name = "Reds")),
+    space = "Lab"
+  )(abs(min(rasVals_Pa)))
+  rc2 <- colorRampPalette(
+    colors = RColorBrewer::brewer.pal(n = 3, name = "Blues"),
+    space = "Lab"
+  )(max(rasVals_Pa))
+  rasCols_Pa <- c(rc1, rc2)
+} else if (max(rasVals_Pa) < 0 & min(rasVals_Pa) < 0) {
+  rasCols_Pa <- colorRampPalette(
+    colors = rev(RColorBrewer::brewer.pal(n = 3, name = "Reds")),
+    space = "Lab"
+  )(abs(min(rasVals)))
+} else if (max(rasVals_Pa) > 0 & min(rasVals_Pa) > 0) {
+  rasColsPa <- colorRampPalette(
+    colors = RColorBrewer::brewer.pal(n = 3, name = "Blues"),
+    space = "Lab"
+  )(max(rasVals_Pa))
+}
+legendPal_Pa <- colorNumeric(rev(rasCols_Pa), rasVals_Pa, na.color = "transparent")
+rasPal_Pa <- colorNumeric(rasCols_Pa, rasVals_Pa, na.color = "transparent")
+# Create map
+m <- leaflet() %>% addProviderTiles(providers$Esri.WorldTopoMap)
+m %>%
+  leaflet::addLegend("bottomright",
+    pal = legendPal_Pa, title = "MESS Values",
+    values = rasVals_Pa, layerId = "xfer",
+    labFormat = reverseLabel(2, reverse_order = TRUE)
+  ) %>%
+  # map model prediction raster and transferring polygon
+  clearMarkers() %>%
+  clearShapes() %>%
+  removeImage("xferRas") %>%
+  addRasterImage(xferMess_Pa,
+    colors = rasPal_Pa, opacity = 0.9,
+    layerId = "xferRas", group = "xfer", method = "ngb"
+  ) %>%
+  ## add transferring polygon: this we need to fix for now please replace bgExt_Pa for the name of your transferring polygon.
+  addPolygons(
+    data = xferExt, fill = FALSE,
+    weight = 4, color = "blue", group = "xfer"
+  )
+```
+
+## 模拟新时段
+
+### MID时期
+
+Transferring the model to the same modelling area with no threshold rule. New time based on "WorldClim 1.4" variables for 1960 to 1990 using a "" GCM and a "" scenario.
+
+```{r xfer_MID}
+# Download data from ecoClimate for transferring
+xferTimeEnvs_Pa <- envs_ecoClimate(
+  "MIROC",
+  "Holo",
+  as.numeric(gsub("bio", "", names(bgMask_Pa)))
+)
+
+# Generate a transfer of the model to the desired area and time
+xfer_time_Pa <- xfer_time(
+  evalOut = model_Pa,
+  curModel = "fc.L_rm.1",
+  envs = xferTimeEnvs_Pa,
+  xfExt = xferExt,
+  alg = "maxnet",
+  outputType = "cloglog",
+  clamp = TRUE
+)
+# store the cropped variables of transfer
+xferExt_Pa_MID <- xfer_time_Pa$xferExt
+plot(xfer_time_Pa$xferTime)
+```
+
+```{r cloglog}
+### Make map of transfer
+bb_Pa <- bgExt_Pa@bbox
+bbZoom <- polyZoom(bb_Pa[1, 1], bb_Pa[2, 1], bb_Pa[1, 2],
+  bb_Pa[2, 2],
+  fraction = 0.05
+)
+mapXferVals_Pa <- getRasterVals(xfer_time_Pa$xferTime, "")
+rasCols_Pa <- c("#2c7bb6", "#abd9e9", "#ffffbf", "#fdae61", "#d7191c")
+# if no threshold specified
+legendPal <- colorNumeric(rev(rasCols_Pa), mapXferVals_Pa,
+  na.color = "transparent"
+)
+rasPal_Pa <- colorNumeric(rasCols_Pa, mapXferVals_Pa,
+  na.color = "transparent"
+)
+m <- leaflet() %>% addProviderTiles(providers$Esri.WorldTopoMap)
+m %>%
+  fitBounds(bbZoom[1], bbZoom[2], bbZoom[3], bbZoom[4]) %>%
+  leaflet::addLegend("bottomright",
+    pal = legendPal,
+    title = "Predicted Suitability<br>(Transferred)",
+    values = mapXferVals_Pa, layerId = "xfer",
+    labFormat = reverseLabel(2, reverse_order = TRUE)
+  ) %>%
+  # map model prediction raster and polygon of transfer
+  clearMarkers() %>%
+  clearShapes() %>%
+  removeImage("xferRas") %>%
+  addRasterImage(xfer_time_Pa$xferTime,
+    colors = rasPal_Pa, opacity = 0.7,
+    layerId = "xferRas", group = "xfer", method = "ngb"
+  ) %>%
+  ## add polygon of transfer (same modeling area)
+  addPolygons(
+    data = xferExt, fill = FALSE,
+    weight = 4, color = "blue", group = "xfer"
+  )
+```
+
+
+```{r logistic}
+# Define probability of quantile based on selected threshold
+xfer_thresProb_Pa <- switch("p10",
+  "mtp" = 0,
+  "p10" = 0.1,
+  "qtp" =
+  )
+# Add threshold if specified
+xfer_time_Pa <- xfer_time_Pa$xferTime > xfer_thresProb_Pa
+
+## Make map
+### Make map of transfer
+bb_Pa <- bgExt_Pa@bbox
+bbZoom <- polyZoom(bb_Pa[1, 1], bb_Pa[2, 1], bb_Pa[1, 2],
+  bb_Pa[2, 2],
+  fraction = 0.05
+)
+mapXferVals_Pa <- getRasterVals(xfer_time_Pa, "logistic")
+
+# if threshold specified
+rasPal_Pa <- c("gray", "red")
+m <- leaflet() %>% addProviderTiles(providers$Esri.WorldTopoMap)
+m %>%
+  fitBounds(bbZoom[1], bbZoom[2], bbZoom[3], bbZoom[4]) %>%
+  leaflet::addLegend("bottomright",
+    colors = c("gray", "red"),
+    title = "Thresholded Suitability<br>(Transferred)",
+    labels = c("predicted absence", "predicted presence"),
+    opacity = 1, layerId = "xfer"
+  ) %>%
+  # map model prediction raster and polygon of transfer
+  clearMarkers() %>%
+  clearShapes() %>%
+  removeImage("xferRas") %>%
+  addRasterImage(xfer_time_Pa,
+    colors = rasPal_Pa, opacity = 0.7,
+    layerId = "xferRas", group = "xfer", method = "ngb"
+  ) %>%
+  ## add polygon of transfer (user provided area)
+  addPolygons(
+    data = xferExt, fill = FALSE,
+    weight = 4, color = "blue", group = "xfer"
+  )
+```
+
+
+MESS:计算环境相似度;
+在迁移模型时，我们新的环境值范围内的某些区域的预测可能具有很高的不确定性，因为它们与模型构建中使用的环境值非常不同。为了可视化这些区域的位置，可通过计算环境相似度, 绘制 MESS 图。MESS 代表 (M)ultivariate (E)nvironmental (S)imilarity (S)urface，该地图显示了与参与模型构建的训练数据的环境差异的连续尺度，其中增加的正值意味着更相似（*蓝色*） , 和减少负值意味着更多的不同（*红色*）；有关详细信息，请参阅模块指导文本。
+
+```{r MESS_MID}
+# R code to generate MESS raster
+xferMess_Pa <- xfer_mess(
+  occs = occs_Pa,
+  bg = bgEnvsVals_Pa,
+  bgMsk = bgMask_Pa,
+  xferExtRas = xferExt_Pa_MID
+)
+
+# Generate MESS map
+rasVals_Pa <- getRasterVals(xferMess_Pa)
+
+# define colorRamp for mess
+if (max(rasVals_Pa) > 0 & min(rasVals_Pa) < 0) {
+  rc1 <- colorRampPalette(
+    colors = rev(RColorBrewer::brewer.pal(n = 3, name = "Reds")),
+    space = "Lab"
+  )(abs(min(rasVals_Pa)))
+  rc2 <- colorRampPalette(
+    colors = RColorBrewer::brewer.pal(n = 3, name = "Blues"),
+    space = "Lab"
+  )(max(rasVals_Pa))
+  rasCols_Pa <- c(rc1, rc2)
+} else if (max(rasVals_Pa) < 0 & min(rasVals_Pa) < 0) {
+  rasCols_Pa <- colorRampPalette(
+    colors = rev(RColorBrewer::brewer.pal(n = 3, name = "Reds")),
+    space = "Lab"
+  )(abs(min(rasVals)))
+} else if (max(rasVals_Pa) > 0 & min(rasVals_Pa) > 0) {
+  rasColsPa <- colorRampPalette(
+    colors = RColorBrewer::brewer.pal(n = 3, name = "Blues"),
+    space = "Lab"
+  )(max(rasVals_Pa))
+}
+legendPal_Pa <- colorNumeric(rev(rasCols_Pa), rasVals_Pa, na.color = "transparent")
+rasPal_Pa <- colorNumeric(rasCols_Pa, rasVals_Pa, na.color = "transparent")
+# Create map
+m <- leaflet() %>% addProviderTiles(providers$Esri.WorldTopoMap)
+m %>%
+  leaflet::addLegend("bottomright",
+    pal = legendPal_Pa, title = "MESS Values",
+    values = rasVals_Pa, layerId = "xfer",
+    labFormat = reverseLabel(2, reverse_order = TRUE)
+  ) %>%
+  # map model prediction raster and transferring polygon
+  clearMarkers() %>%
+  clearShapes() %>%
+  removeImage("xferRas") %>%
+  addRasterImage(xferMess_Pa,
+    colors = rasPal_Pa, opacity = 0.9,
+    layerId = "xferRas", group = "xfer", method = "ngb"
+  ) %>%
+  ## add transferring polygon: this we need to fix for now please replace bgExt_Pa for the name of your transferring polygon.
+  addPolygons(
+    data = xferExt, fill = FALSE,
+    weight = 4, color = "blue", group = "xfer"
+  )
+```
+
+### LGM时期
+
+Transferring the model to the same modelling area with no threshold rule. New time based on "WorldClim 1.4" variables for 1960 to 1990 using a "" GCM and a "" scenario.
+
+```{r xfer_LGM}
+# Download data from ecoClimate for transferring
+xferTimeEnvs_Pa <- envs_ecoClimate(
+  "MIROC",
+  "LGM",
+  as.numeric(gsub("bio", "", names(bgMask_Pa)))
+)
+
+# Generate a transfer of the model to the desired area and time
+xfer_time_Pa <- xfer_time(
+  evalOut = model_Pa,
+  curModel = "fc.L_rm.1",
+  envs = xferTimeEnvs_Pa,
+  xfExt = xferExt,
+  alg = "maxnet",
+  outputType = "cloglog",
+  clamp = TRUE
+)
+# store the cropped variables of transfer
+xferExt_Pa_LGM <- xfer_time_Pa$xferExt
+plot(xfer_time_Pa$xferTime)
+```
+
+```{r cloglog}
+### Make map of transfer
+bb_Pa <- bgExt_Pa@bbox
+bbZoom <- polyZoom(bb_Pa[1, 1], bb_Pa[2, 1], bb_Pa[1, 2],
+  bb_Pa[2, 2],
+  fraction = 0.05
+)
+mapXferVals_Pa <- getRasterVals(xfer_time_Pa$xferTime, "")
+rasCols_Pa <- c("#2c7bb6", "#abd9e9", "#ffffbf", "#fdae61", "#d7191c")
+# if no threshold specified
+legendPal <- colorNumeric(rev(rasCols_Pa), mapXferVals_Pa,
+  na.color = "transparent"
+)
+rasPal_Pa <- colorNumeric(rasCols_Pa, mapXferVals_Pa,
+  na.color = "transparent"
+)
+m <- leaflet() %>% addProviderTiles(providers$Esri.WorldTopoMap)
+m %>%
+  fitBounds(bbZoom[1], bbZoom[2], bbZoom[3], bbZoom[4]) %>%
+  leaflet::addLegend("bottomright",
+    pal = legendPal,
+    title = "Predicted Suitability<br>(Transferred)",
+    values = mapXferVals_Pa, layerId = "xfer",
+    labFormat = reverseLabel(2, reverse_order = TRUE)
+  ) %>%
+  # map model prediction raster and polygon of transfer
+  clearMarkers() %>%
+  clearShapes() %>%
+  removeImage("xferRas") %>%
+  addRasterImage(xfer_time_Pa$xferTime,
+    colors = rasPal_Pa, opacity = 0.7,
+    layerId = "xferRas", group = "xfer", method = "ngb"
+  ) %>%
+  ## add polygon of transfer (same modeling area)
+  addPolygons(
+    data = xferExt, fill = FALSE,
+    weight = 4, color = "blue", group = "xfer"
+  )
+```
+
+
+```{r logistic}
+# Define probability of quantile based on selected threshold
+xfer_thresProb_Pa <- switch("p10",
+  "mtp" = 0,
+  "p10" = 0.1,
+  "qtp" =
+  )
+# Add threshold if specified
+xfer_time_Pa <- xfer_time_Pa$xferTime > xfer_thresProb_Pa
+
+## Make map
+### Make map of transfer
+bb_Pa <- bgExt_Pa@bbox
+bbZoom <- polyZoom(bb_Pa[1, 1], bb_Pa[2, 1], bb_Pa[1, 2],
+  bb_Pa[2, 2],
+  fraction = 0.05
+)
+mapXferVals_Pa <- getRasterVals(xfer_time_Pa, "logistic")
+
+# if threshold specified
+rasPal_Pa <- c("gray", "red")
+m <- leaflet() %>% addProviderTiles(providers$Esri.WorldTopoMap)
+m %>%
+  fitBounds(bbZoom[1], bbZoom[2], bbZoom[3], bbZoom[4]) %>%
+  leaflet::addLegend("bottomright",
+    colors = c("gray", "red"),
+    title = "Thresholded Suitability<br>(Transferred)",
+    labels = c("predicted absence", "predicted presence"),
+    opacity = 1, layerId = "xfer"
+  ) %>%
+  # map model prediction raster and polygon of transfer
+  clearMarkers() %>%
+  clearShapes() %>%
+  removeImage("xferRas") %>%
+  addRasterImage(xfer_time_Pa,
+    colors = rasPal_Pa, opacity = 0.7,
+    layerId = "xferRas", group = "xfer", method = "ngb"
+  ) %>%
+  ## add polygon of transfer (user provided area)
+  addPolygons(
+    data = xferExt, fill = FALSE,
+    weight = 4, color = "blue", group = "xfer"
+  )
+```
+
+MESS:计算环境相似度;
+在迁移模型时，我们新的环境值范围内的某些区域的预测可能具有很高的不确定性，因为它们与模型构建中使用的环境值非常不同。为了可视化这些区域的位置，可通过计算环境相似度, 绘制 MESS 图。MESS 代表 (M)ultivariate (E)nvironmental (S)imilarity (S)urface，该地图显示了与参与模型构建的训练数据的环境差异的连续尺度，其中增加的正值意味着更相似（*蓝色*） , 和减少负值意味着更多的不同（*红色*）；有关详细信息，请参阅模块指导文本。
+
+```{r MESS_LGM}
+# R code to generate MESS raster
+xferMess_Pa <- xfer_mess(
+  occs = occs_Pa,
+  bg = bgEnvsVals_Pa,
+  bgMsk = bgMask_Pa,
+  xferExtRas = xferExt_Pa_LGM
+)
+
+# Generate MESS map
+rasVals_Pa <- getRasterVals(xferMess_Pa)
+
+# define colorRamp for mess
+if (max(rasVals_Pa) > 0 & min(rasVals_Pa) < 0) {
+  rc1 <- colorRampPalette(
+    colors = rev(RColorBrewer::brewer.pal(n = 3, name = "Reds")),
+    space = "Lab"
+  )(abs(min(rasVals_Pa)))
+  rc2 <- colorRampPalette(
+    colors = RColorBrewer::brewer.pal(n = 3, name = "Blues"),
+    space = "Lab"
+  )(max(rasVals_Pa))
+  rasCols_Pa <- c(rc1, rc2)
+} else if (max(rasVals_Pa) < 0 & min(rasVals_Pa) < 0) {
+  rasCols_Pa <- colorRampPalette(
+    colors = rev(RColorBrewer::brewer.pal(n = 3, name = "Reds")),
+    space = "Lab"
+  )(abs(min(rasVals)))
+} else if (max(rasVals_Pa) > 0 & min(rasVals_Pa) > 0) {
+  rasColsPa <- colorRampPalette(
+    colors = RColorBrewer::brewer.pal(n = 3, name = "Blues"),
+    space = "Lab"
+  )(max(rasVals_Pa))
+}
+legendPal_Pa <- colorNumeric(rev(rasCols_Pa), rasVals_Pa, na.color = "transparent")
+rasPal_Pa <- colorNumeric(rasCols_Pa, rasVals_Pa, na.color = "transparent")
+# Create map
+m <- leaflet() %>% addProviderTiles(providers$Esri.WorldTopoMap)
+m %>%
+  leaflet::addLegend("bottomright",
+    pal = legendPal_Pa, title = "MESS Values",
+    values = rasVals_Pa, layerId = "xfer",
+    labFormat = reverseLabel(2, reverse_order = TRUE)
+  ) %>%
+  # map model prediction raster and transferring polygon
+  clearMarkers() %>%
+  clearShapes() %>%
+  removeImage("xferRas") %>%
+  addRasterImage(xferMess_Pa,
+    colors = rasPal_Pa, opacity = 0.9,
+    layerId = "xferRas", group = "xfer", method = "ngb"
+  ) %>%
+  ## add transferring polygon: this we need to fix for now please replace bgExt_Pa for the name of your transferring polygon.
+  addPolygons(
+    data = xferExt, fill = FALSE,
+    weight = 4, color = "blue", group = "xfer"
+  )
+```

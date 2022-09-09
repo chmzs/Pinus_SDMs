@@ -1,0 +1,686 @@
+---
+title: "青藏高原LGM以来油松分布模拟与人类活动耦合关系探讨"
+author:
+  - 陈鸿明
+  - 侯光良
+  - 907
+date: "`r Sys.Date()`"
+documentclass: ctexart
+geometry: "left=2cm,right=2cm,top=2cm,bottom=2cm"
+output:
+  rticles::ctex:
+    pandoc_args: --listings
+    includes:
+      in_header: preamble.tex
+    df_print: kable
+    keep_tex: true
+    fig_caption: yes
+    number_sections: yes
+    toc: yes
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE,
+  warning = T,
+  tidy = T,
+  fig.align = "left",
+  fig.width = 8,
+  fig.showtext = TRUE
+)
+```
+
+# 引言
+
+本项目代码得益于R语言SDMs相关宏包，如ENMseval 2.0 和 Wallace 指导手册代码的支持，在其ENMseval2.0.rmd 和 ENMs_T.rmd的基础上进一步优化改善其工作流。整体上依赖ENMseval2.0 包的相关功能。 引用： [ENMeval 2.0.0 Vignette](https://jamiemkass.github.io/ENMeval/articles/ENMeval-2.0.0-vignette.html#introduction)
+
+[ENMeval](https://cran.r-project.org/package=ENMeval)是一个R软件包，可以对生态位模型（ENMs，又称物种分布模型或SDMs）进行自动调整和评估，它可以利用物种存在数据和环境变量数据估计物种的范围和生态位特征（Franklin 2010, Peterson et al 2011, Guisan et al 2017）ENMseval可以"调整"一些通用的ENM机器学习算法，使得模型复杂性和拟合程度处于最佳平衡水平（Hastie et al，2009；；Radosavljevic & Anderson，2014；Hallgren et al，2019）
+
+```{r 加载包}
+# 加载包
+# 这里的顺序很重要，因为有些包的函数会覆盖其他包的函数。（名称存在冲突）
+library(mapview)
+library(spThin)  # 空间稀疏
+library(dismo)  # 预测分布，maxent.jar
+library(sf)
+library(terra)  # 栅格处理
+library(ENMeval)  # 模型构建与评估
+library(dplyr)
+
+# 设置一个随机种子，以便能够重现这一分析。 
+set.seed(666) 
+
+# 运行环境信息
+readr::write_lines(sessionInfo(), "result/log_text/session_info.txt")
+
+# 设置运行结果记录日志版本，采用时间记录
+time <- format(Sys.Date())
+# 设置当前项目可用最大内存
+memory.limit(25000)
+
+#change the tempdir() location(全局)
+tempdir <- function() "/Temp/Rtmp"
+unlockBinding("tempdir", baseenv())
+utils::assignInNamespace("tempdir", tempdir, ns="base", envir=baseenv())
+assign("tempdir", tempdir, baseenv())
+lockBinding("tempdir", baseenv())
+```
+
+# 获取Occs数据
+
+可以使用[spocc](https://github.com/ropensci/spocc)软件包（下面有注释）搜索在线数据库，如GBIF；搜索分析对象的 物种属种名 （如 **Juniperus przewalskii**）；从gbif数据库中获取所选物种的记录（带有位置信息的），最高限制为10 000个，其他来源的数据库还有：\`'bison','vertnet', 'inat', 'ebinrd', 'idigbio', 'obis', 'ala'\`，相关数据介绍可见文档:《生物多样性数据整合与服务研究》 (许哲平, 2021).
+
+```{r}
+# 通过Spocc获取单个或多个物种species的数据
+spnames <- c('Pinus tabuliformis', # 油松
+             'Pinus armandii',     # 华山松
+             'Pinus densata',      # 高山松
+             'Pinus yunnanensis',  # 云南松
+             'Pinus gerardiana',   # 西藏白皮松
+             'Pinus roxburghii',   # 西藏长叶松/喜马拉雅长叶松 # nolint
+             'Pinus wallichiana',  # 乔松
+             'Pinus  bhutanica'    # 不丹松
+             )
+# 研究区矩形范围
+qtp <- st_read("datas/StudyArea/TPboundaryPolygon.shp")
+cn <- st_read("datas/StudyArea/CN_Albert.geojson")
+int <- st_sfc(st_polygon(list(cbind(c(90, 90, 130, 130, 90),c(30, 45, 45, 30, 30)))), crs = 4326)
+# 两图层crs要一致
+int <-st_transform(qtp, crs = 4326)
+int_wkt <- geom(vect(int), wkt = T)
+
+wkt <- 'POLYGON((67.67694444 25.99166667, 104.6825  25.99166667, 104.6825  40.01666667 ,67.67694444 40.01666667 ,67.67694444 25.99166667))'
+wkt <- 'POLYGON((89.4047 31.59898, 103.071  31.59898, 103.071  39.20834 ,89.4047 39.20834 ,89.4047 31.59898))'
+out <- spocc::occ(query = 'Picea crassifolia', 
+                      from = 'gbif',  
+                      limit = 10000,
+                      # geometry = wkt,
+                      has_coords = TRUE)
+out_df <- spocc::occ2df(out$gbif, what = "data")
+```
+
+```{r eval=FALSE}
+# 按genus获取
+manta_ray <- rgbif::name_backbone("Pinus")$usageKey
+out <- rgbif::occ_data(manta_ray, geometry = wkt, limit=10000, hasCoordinate = TRUE)
+out_df <- out$data %>% 
+  rename(name = scientificName, longitude = decimalLongitude, latitude = decimalLatitude) %>% 
+  dplyr::select(name, longitude, latitude)
+```
+## occs筛选
+```{r}
+
+# 保存预下载的物种数据，可以打开excel查看处理
+readr::write_csv(out_df,
+                 "datas/Occs/Pinus_tabuliformis_gbif_origin.csv", 
+                 na = "NA")
+# 也可本地加载现成的数据
+out_df <- readr::read_csv("datas/Occs/Pinus_tabuliformis_gbif_origin.csv")
+```
+
+
+
+```{r}
+occs_sf <- st_as_sf(out_df, coords = c("longitude", "latitude"), crs = 4326)
+occs_int <- occs_sf[int,]
+mapview(list(int, occs_int))
+```
+
+## occs数据清洗
+```{r}
+occs <- bind_cols(st_drop_geometry(occs_int), st_coordinates(occs_int))
+library(scrubr)
+occs <- dframe(occs) %>%
+  coord_impossible() %>% # Remove impossible coordinates (using sample data included in the pkg)
+  coord_incomplete() %>% #Remove incomplete coordinates
+  coord_unlikely() %>% # Remove unlikely coordinates (e.g., those at 0,0)
+  dplyr::select(c("name", "X", "Y")) %>% 
+  dedup()
+
+occs_int <- st_as_sf(occs, coords = c("X", "Y"), crs = 4326)
+# PCA
+occs_int <- st_transform(occs_int, crs = crs(qtp))
+mapview(list(int, occs_int))
+```
+
+```{r}
+# occs_int <-st_transform(occs_int, crs(qtp))
+occs <- bind_cols(st_drop_geometry(occs_int), st_coordinates(occs_int))
+# 确保经度和纬度的数据类型为 “数字型” (sometimes they are characters)
+occs$Y <- as.numeric(occs$Y)
+occs$X <- as.numeric(occs$X)
+occs$occID <- 1:nrow(occs)
+```
+
+
+## 空间细化
+Spatial thinning selected. Thin distance selected is 6 km. 由于spThin做了100次迭代，所以它对你的发生地的稀释方式有100种不同的变化。由于算法中存在随机因素，一些迭代可能比其他迭代包含更多的局部，我们需要确保我们继续进行的局部的数量最大化。
+
+```{r warning = F}
+# thin.par,希望记录被分开的距离（以公里为单位），越大点越少
+output <- spThin::thin(occs, lat.col = 'Y', long.col = 'X', spec.col ='name',
+                       thin.par = 1, reps = 100, 
+                       locs.thinned.list.return = TRUE,
+                       write.files = F,
+                       verbose = FALSE)
+
+# find the iteration that returns the max number of occurrences
+maxThin <- which(sapply(output, nrow) == max(sapply(output, nrow)))
+# if there's more than one max, pick the first one
+maxThin <- output[[ifelse(length(maxThin) > 1, maxThin[1], maxThin)]]  
+# subset occs to match only thinned occs
+occs <- occs[as.numeric(rownames(maxThin)),]
+# 查看处理好的occs数据
+occs_sf <- st_as_sf(occs, coords = c("X", "Y"), crs = crs(qtp))
+
+mapview(list(int, occs_sf))
+```
+
+## processed_Occs
+
+```{r}
+# 保存预处理后的物种数据
+readr::write_csv(occs,
+                 "datas/Occs/Pinus_tabuliformis_gbif_processed.csv", 
+                 na = "NA")
+occs <- readr::read_csv("datas/Occs/Pinus_tabuliformis_gbif_processed.csv")
+```
+
+# 获取环境变量
+构建模型的当前环境变量是从WorldClim (<http://www.worldclim.org/>) 下载的bioclimatic dataset ，分辨率`res = 2.5` 分。
+
+```{r}
+# 从WorldClim在线下载
+# envs <- geodata::worldclim_global(var = "bio", res = 0.5, path="datas/current_bio/wc30")
+
+# 本地加载19个生物气候变量
+bio_file <- list.files("datas/current_bio/wc2.1_30s_bio", pattern = ".tif$", full.names = T, recursive = T)
+bio <- bio_file %>% rast()
+names(bio) <- paste0('bio', sprintf("%02d", 1:19))
+
+```
+
+
+
+
+# 研究区与背景范围
+Maxent是SDMs关联模型中的分布-背景方法，使用occs分布点指定缓冲距离（1.5 degrees = 180 km）掩膜提取环境变量来构建背景区域，在背景区域内通过随机生成若干背景值点。由于样本是随机的，你的结果可能 与案例中的结果不同。如果这些背景样本似乎有太多的 如果这些背景样本的变异性太大，可以尝试将数量从 10,000到更高的数量（例如50,000或100,000）。你的背景样本越好 你的背景样本越好，你的运行结果之间的变异性就越小。
+ - 缓冲距离如何指定？建议考虑花粉传播距离并采用逐步实验AUC比较法，寻找最佳值
+ - 背景点数量由背景区域内环境变量像元数量为上限
+
+```{r}
+# 设置terra缓存文件夹到更大的磁盘
+terra::terraOptions(tempdir="Temp/Rtmp")
+
+
+# 按研究区裁剪变量
+bio_int <- crop(bio, vect(int))
+bio_int <- mask(bio_int, vect(int))
+# 用elev作为模板投影envs_int，统一分辨率; 连续变量使用双线性插值
+elev <- rast("datas/Terrains/wc2.1_30s_elev_Albert.tif")
+bio_int <- project(bio_int, elev, method = "bilinear")
+
+plot(bio_int["bio01"])
+
+# 本地存储
+writeRaster(bio_int, "datas/current_bio/envs_cn_30s.tif", overwrite=TRUE)
+
+bio_int <- rast(c("YouSong_flexSDM/1_Inputs/2_Predictors/1_Current/chelsa_qtp_30s_albert.tif",
+                  "datas/current_bio/Chelsa_30s/CHELSA_scd_swe_Albert_V21.tif"))
+
+# 本地加载地形变量(terrains)
+terrains <- list.files("datas/Terrains", 
+                       pattern = ".tif$", full.names = T, recursive = T) %>% 
+  rast()
+names(terrains) = c('aspect', 'elev', 'slope', 'TPI', 'TRI')
+
+# 合并变量
+envs <- c(bio_int, terrains)
+
+
+# 完整变量
+writeRaster(envs, "datas/current_bio/Chelsa_30s/envs_qtp_30s.tif", overwrite=TRUE)
+envs <- rast("datas/current_bio/envs_cn_30s_1.tif")
+# envs_pca
+envs <- rast("YouSong_flexSDM/1_Inputs/Projection_PCA/cur/pcs.tif")
+```
+# 研究区环境相似性
+```{r}
+# 根据occs位置提取连续变量值
+occs.z <- cbind(occs, terra::extract(envs, vect(occs_sf))) %>% dplyr::select(-c(ID, name, occID))
+
+# 使用基于rmaxent包的similarity() function计算研究区范围与occs点的环境相似性 
+occs.sim <- similarity(envs, occs.z)
+occs.mess <- occs.sim$similarity_min
+# This is the MESS plot -- increasingly negative values represent increasingly different 
+# climatic conditions from the reference (our occurrences), while increasingly positive 
+# values are more similar. First, we'll make a SpatialPoints object for our occurrences 
+# for plotting with levelplot() from the rasterVis package (Lamigueiro & Hijmans 2021).
+# This package has great plotting functionality for rasters, and by default bins values for 
+# display when data is continuous.
+occs.sp <- sp::SpatialPoints(occs[, c('X', 'Y')])
+# Vector data (points, polygons) are added to a levelplot with a "+", like ggplot.
+rasterVis::levelplot(occs.mess, main = "Environmental similarity", margin = FALSE) + 
+  latticeExtra::layer(sp.points(occs.sp, col="black"))
+
+```
+
+
+```{r}
+# 选定背景区域范围
+occs_buf <- st_buffer(occs_sf, dist = 200000) %>% st_union() %>% st_sf()
+plot(occs_buf)
+
+
+# crop the environmental rasters by the background extent shape
+envs_bg <- crop(envs, vect(occs_buf))
+
+# mask the background extent shape from the cropped raster
+envs_bg <- mask(envs_bg, vect(occs_buf))
+
+plot(envs_bg['bio01'])
+```
+
+### 生成背景点
+- 参考envs栅格数据中非NA值像元数量 !
+- 如果这个数字远远超过10,000，那么就使用10,000个背景点。
+- 如果这个数字与10,000相当，或者小于10,000，那么就使用5,000、1,000、500、甚至100个背景点。可用的非NA空间的数量应该 应远远超过所使用的背景点的数量。
+
+```{r}
+# bg点
+# sample randombackground points
+# convert matrix output to data frame
+
+bg <- dismo::randomPoints(raster::brick(envs), n = 2800) %>% 
+  as.data.frame() %>%  rename('X' = 'x', 'Y' = 'y')
+
+bg <- flexsdm::sample_background(data = occs,
+                                 x = "X",
+                                 y = "Y",
+                                 n = nrow(occs)*100,
+                                 method = "random",
+                                 rlayer = envs,
+                                 calibarea = vect(occs_buf)
+                                ) %>% rename('X' = 'x', 'Y' = 'y')
+bg.z <- cbind(bg[, c('X', 'Y')], terra::extract(envs, bg[, c('X', 'Y')])) %>% dplyr::select(-ID)
+occs_bg.z <- rbind(occs.z, bg.z) %>% dplyr::select(-c(X, Y))
+# Visualize species presences and pseudo-absences
+plot(
+  vect(qtp),
+  col = "gray80",
+  legend = FALSE,
+  axes = FALSE,
+  xlim = c(-1266874, 129438.9),
+  ylim = c(2676152,  4150853),
+  main = "Presence = yellow, Pseudo-absence = black")
+plot(vect(occs_buf), add=TRUE)
+points(bg[,c("X", "Y")], cex=0.8, pch=16, col = "black") # Pseudo-absences
+points(occs[,c("X", "Y")], col = "yellow", pch = 16, cex = 1.5) # Presences
+
+```
+
+
+## 设置并行运算
+```{r}
+#### Set parallel computing options to speed up some of the subsequent analyses ####
+library(future)
+library(furrr)
+
+### use a baseline of 3/5 of the available cores as workers for parallel processing if not otherwise specified
+nWorkingProcesses<-ceiling((3/5)*availableCores())
+### return an error when non-exportable objects are detected
+options(future.globals.onReference = "error")
+```
+
+```{r}
+
+
+corrplot::corrplot(occs.z)
+hist(occs.z$X)
+library(ggplot2)
+ggplot(occs.z, aes_string(occs.z)) +
+  geom_density()
+for (i in 1:6) {
+  plot(density(occs.z[, i]))
+  print(p)
+}
+  
+hist(occs.z)
+plot(density(occs.z$bio01))
+
+
+head(occs_bg.z)
+
+
+library(bruceR)
+Corr(occs_bg.z,
+     method = 'spearman', 
+     digits = 1,
+     plot = T)
+
+
+library(usdm)
+
+vif(raster::stack(envs_bg))
+
+v <- vifcor(occs_bg.z, th= 0.8)
+
+#vifcor
+v
+envs_bg_seq1 <- exclude(raster::brick(envs_bg), v)
+envs_bg_seq2 <- envs_bg[[c('bio01', 'bio02', 'bio03', 'bio04', 'bio12', 'bio15', 'scd', 'swe', 'aspect', 'elev', 'slope', "TRI")]]
+```
+
+
+# Build and Evaluate Niche Model
+
+You selected the maxent model.
+**如果你的发生点少于50个，你将需要使用 "jackknife** "方法来验证模型。要做到这一点，你需要替换：用`partitions = "jackknife "`代替`partitions = "randomkfold", partition.settings = list(kfolds = 10) `
+
+```{r}
+gc()
+library(data.table)
+
+# New
+envs_bg_seq <- envs_bg[[c("bio01", "bio02", "bio03", "bio04", "bio08", "bio12", "bio15")]]
+tune.args = list(fc = c("L","LQ","H", "LQH", "LQHP", "LQHPT"), 
+                 rm = c(seq(0.1, 1, 0.1), seq(2, 6, 1), 8, 10))
+
+# pred.type = "cloglog" 或 "logistic"
+os <- list(abs.auc.diff = T, pred.type = "cloglog", validation.bg = "partition")
+
+ps <- list(orientation = "lat_lat")
+ 
+e <- ENMeval::ENMevaluate(occs[, -3], 
+                 envs_bg_seq, 
+                 bg, 
+                 tune.args = tune.args, 
+                 partitions = "block", 
+                 other.settings = os, 
+                 partition.settings = ps, 
+                 algorithm = "maxnet"
+                 )
+
+e <- ENMevaluate(occs = occs.z %>% select(names(envs_bg)) %>% as.data.table(),
+                 bg = bg.z %>% select(names(envs_bg)) %>% as.data.table(),
+                 tune.args = list(fc = c("L", "LQ", "H"), rm = seq(1,5,0.5)), 
+                 partitions = "block", 
+                 other.settings = os, 
+                 partition.settings = ps, 
+                 algorithm = "maxnet"
+                 )
+
+jack <- get.jackknife(occs.z[, c('X', 'Y')], bg.z[, c('X', 'Y')])
+plot(occs.z[, c('X', 'Y')], pch=23, bg=rainbow(length(jack$occs.grp)))
+e <- ENMevaluate(occs = occs.z %>% as.data.table(),
+                 bg = bg.z %>% as.data.table(),
+                 tune.args = list(fc = c("L", "LQ", "LQH", "H", "LQHP"), rm = seq(1,5,0.5)),
+                 partitions = "jackknife",
+                   # "randomkfold", 
+                 algorithm = "maxnet",
+                 doClamp = F #,
+                 # clamp.directions = list(left = c("bio13","bio18"), right = c("bio05","bio12"))
+                 )
+# ("left" for minimum, "right" for maximum
+
+e <- ENMevaluate(occs = occs.z %>% dplyr::select(X,Y),
+                 bg = bg.z %>% dplyr::select(X, Y),
+                 envs = raster::brick(envs),
+                 tune.args = list(fc = c("L", "LQ", "LQH", "H", "LQHP"), rm = seq(1,5,0.5)),
+                 partitions = "jackknife", 
+                 algorithm = "maxnet",
+                 doClamp = F
+                 )
+```
+
+
+Compute pairwise "niche overlap" in geographic space for Maxent predictions. The value ranges from 0 (no overlap) to 1 (identical predictions). The function uses the nicheOverlap function of the dismo package (Hijmans et al. 2011).
+```{r}
+# overlap <-  calc.niche.overlap(e@predictions, overlapStat = "I")
+
+# corrplot::corrplot(overlap, method = "shade", shade.col = NA, tl.col = 'black', tl.srt = 45, addCoef.col = 'black', cl.pos = 'n')
+```
+# 迁移到Model选择部分
+```{r}
+# 构建模型的分布数据和背景数据
+eval.occs(e) %>% head()
+
+eval.bg(e) %>% head()
+```
+
+## 可视化评估指标
+
+```{r}
+# 我们可以用ggplot facetting一次绘制多个统计数字。
+evalplot.stats(e = e, stats = c("or.mtp", "auc.val"), color = "fc", x.var = "rm", error.bars = T, dodge = 0.1)
+```
+
+```{r}
+# 最后，我们可以切换哪些变量在X轴上，哪些变量用颜色来象征。
+# ENMeval目前一次只接受两个变量用于绘图。
+evalplot.stats(e = e, stats = c("or.mtp", "auc.val"), color = "rm", x.var = "fc", 
+               error.bars = FALSE)
+```
+
+## Model selection
+
+一旦我们有了结果，我们将希望选择一个或多个我们认为在所有运行的模型中是最优的模型。在这个例子中，我们将演示如何在不考虑交叉验证结果的情况下使用AICc（Warren & Seifert 2011；但见Velasco & González-Salazar 2019）和使用交叉验证结果的顺序方法，即选择平均测试遗漏率最低的模型，为了打破平局，选择平均验证AUC最高的模型（Radosavljevic & Anderson 2014，Kass等人，2020）。Lobo等人（2008）和其他人指出，验证AUC作为存在-背景ENM的绝对性能指标是不合适的，但用来对用相同数据构建的模型进行相对比较是有效的。值得注意的是，ENMeval 2.0.0也默认使用R包ecospat（Di Cola等人，2017）返回训练、验证和完全扣留测试数据的连续Boyce指数（Hirzel等人，2006），所以这个指标也可以用来选择最佳模型。
+```{r}
+# unpack the results data frame, the list of models, and the RasterStack of raw predictions
+evalTbl <- e@results
+# 保存模型拟合结果
+readr::write_csv(evalTbl, "result/log_text/enmeval_cn_results.csv")
+
+
+# 选择delta AICc趋近于0的模型，或者选择AICc得分最低的模型。
+# 在实践中，deltaAICc得分小于2的模型通常被认为是统计学上的等值。 
+opt.aicc <- evalTbl %>% filter(delta.AICc == 0)
+opt.aicc
+
+opt.seq <- evalTbl %>% 
+  filter(or.10p.avg == min(or.10p.avg)) %>% 
+  filter(auc.val.avg == max(auc.val.avg))
+opt.seq
+
+evalMods <- e@models
+names(evalMods) <- e@tune.settings$tune.args
+
+evalPreds <- e@predictions
+plot(evalPreds)
+```
+
+
+现在让我们根据顺序标准选择最佳的模型设置，并对其进行检查。
+```{r}
+
+# 我们可以使用最优模型的tune.args从ENMevaluation对象中选择一个模型。
+mod_seq <- evalMods[[opt.seq$tune.args]]
+# opt.seq$tune.args
+# 下面是我们模型中的非零系数。
+library(tibble)
+enframe(mod_seq$betas)
+```
+
+```{r}
+# view response curves for environmental variables with non-zero coefficients
+# 我们模型中系数不为零的预测变量的边际响应曲线。
+# 我们将y轴定义为cloglog变换，
+# 这是一个由0和1约束的发生概率的近似值（有假设）（Phillips等人，2017）。
+plot(mod_seq, type = "cloglog")
+# Bio5:最暖月最高温 ; Bio13:最湿月降水量
+```
+
+```{r}
+# generate raw prediction
+pred_seq <- eval.predictions(e)[[opt.seq$tune.args]]
+plot(pred_seq)
+
+# 我们还可以将分档后的背景点与发生点绘制在上面，以便 可视化训练数据的位置。
+points(eval.bg(e), pch = 3, col = eval.bg.grp(e), cex = 0.5)
+points(eval.occs(e), pch = 21, bg = eval.occs.grp(e))
+```
+
+
+
+探讨一下模型的复杂性如何改变我们例子中的预测结果
+首先检查边际响应曲线，然后是映射模型的模型预测。请注意，较简单的模型往往对适宜性的预测比较平稳，而复杂的模型往往显示出更多的斑块。决定一个更简单或更复杂的模型是否适合你的研究并不简单，但文献中存在指南（如Merow等人，2014）。
+
+# Null models
+
+我们能够计算出我们的模型的性能指标，如遗漏率(omission rates)和AUC，但我们不知道它们与用随机数据建立的空模型计算的相同指标相比如何。这些信息将使我们能够确定这些指标的重要性和效果大小。如果我们为我们的经验模型计算的指标与一系列空模型计算的指标没有明显的不同，我们就不会有很高的信心认为它们有意义地代表了我们的经验模型的表现。Raes & ter Steege（2007）首次提出了**空值ENM(null ENM)**的概念，并演示了如何应用它。这种方法从研究范围内随机抽取发生记录，并通过**随机交叉验证**对**空模**型进行评估。此后，对这种原始方法进行了一些改进。Bohl等人（2019）实施了这样的修改，他们提出在与经验模型相同的**隐蔽发生数据**(the same withheld occurrence data)上评价模型。这种方法可以直接比较空(null)的性能指标和实证模型(spatial partitions)的性能指标。Kass等人（2020）进一步扩展了这一方法，将其配置为使用空间分区计算空性能指标。
+
+ENMeval 2.0.0具有使用Bohl等人的方法和Kass等人的扩展来运行空值ENM( null ENMs)的功能，并将(the empirical model )经验模型的性能与空值模型(he null model)的平均值进行可视化。
+
+```{r}
+# We first run the null simulations with 100 iterations to get a reasonable null distribution 
+# 我们首先用100次迭代来运行空模拟，以得到一个合理的空分布，以便与经验值进行比较
+mod.null <- ENMnulls(e, mod.settings = list(fc = "L", rm = 1), no.iter = 100)
+
+```
+```{r}
+# 我们可以检查每个空模拟的结果。
+null.results(mod.null) %>% head()
+
+# 甚至检查每个空模拟的每个分区的结果。
+null.results.partitions(mod.null) %>% head()
+```
+
+```{r}
+# 作为总结，我们可以看一下经验和模拟结果的比较。
+null.emp.results(mod.null)
+```
+
+```{r}
+# 最后，我们可以把空模型的结果做成柱状图。
+evalplot.nulls(mod.null, stats = c("or.10p", "auc.val"), plot.type = "histogram")
+
+# Or we can visualize the results with a violin plot.
+evalplot.nulls(mod.null, stats = c("or.10p", "auc.val"), plot.type = "violin")
+```
+
+# Project Niche Model
+
+# current
+
+You selected to project your model. First define a polygon with the
+coordinates you chose, then crop and mask your predictor rasters.
+Finally, predict suitability values for these new raster cells based on
+the model you selected.
+
+```{r}
+qtp <- st_transform(qtp, crs = 4326)
+library(wallace)
+proj_Current <- xfer_area(
+  evalOut = e,
+  curModel = "fc.LQHP_rm.5",
+  envs =  raster::brick(envs), 
+  outputType = "cloglog",
+  alg = "maxnet",
+  clamp = F,
+  xfExt = qtp)
+
+plot(proj_Current$xferArea, main = "现今QTP分布范围")
+
+writeRaster(proj_Current$xferArea, "result/Maps/cn_proj_Current.tif")
+
+```
+```{r}
+CurMess <- xfer_mess(occs = occs.z, bg = bg.z, bgMsk = raster::brick(envs),
+                      xferExtRas = raster::brick(envs))
+plot(CurMess)
+```
+
+
+```{r}
+# 1km内保留一个, 最终版
+cur_pollen <- readr::read_csv("datas/VerifyData/Pinus_Asia_modern_pollen.csv") %>% 
+  mutate(Pinus = Pinus/100) %>% 
+  rename(y = Latitude, x = Longitude)
+
+cur_sdm_pin <- vect(cur_pollen, geom = c("x", "y"), crs = 'epsg:4326') %>%
+  terra::extract(rast(proj_Current$xferArea), ., xy = T) %>% 
+  rename(sdm = layer) %>% 
+  distinct(., sdm, .keep_all = T) %>% 
+  left_join(cur_pollen, by = c('x', 'y')) %>% 
+  na.omit()
+
+
+bruceR::Corr(
+  cur_sdm_pin[, c('sdm', 'Pinus', "Altitude")],
+  method = "pearson",
+  p.adjust = "none",
+  all.as.numeric = TRUE,
+  file = NULL,
+  plot = TRUE,
+  plot.range = c(-1, 1),
+  plot.palette = NULL,
+  plot.color.levels = 201,
+  plot.file = NULL,
+  plot.width = 8,
+  plot.height = 6,
+  plot.dpi = 500
+)
+ 
+plot(log(cur_sdm_pin$Pinus), log(cur_sdm_pin$sdm))
+corr(log(cur_sdm_pin$Pinus), log(cur_sdm_pin$sdm))
+lmm <- cur_sdm_pin %>% 
+  lm(Pinus ~ sdm + x + y + Altitude, .)
+bruceR::model_summary(lmm) 
+```
+
+
+## 全新世中期(6 ka)投射
+```{r}
+MID_file <- list.files("datas/Paleo_bio/chelsa_trace21k_6ka_-40/", pattern = ".tif$", full.names = T, recursive = T)
+envs_MID <- MID_file %>% rast()
+names(envs_MID) <- c(paste0('bio', sprintf("%02d", 1:19)), 'dem', 'scd', 'swe')
+# select climate variables
+predsProj_MID_seq <- terra::subset(predsProj_MID, names(envs_bg_seq))
+
+# predict model
+proj_MID <- xfer_area(
+  evalOut = e,
+  curModel = "fc.LQHP_rm.3.5",
+  envs = raster::stack(envs_MID), 
+  outputType = "cloglog",
+  alg = "maxnet",
+  clamp = T,
+  xfExt = qtp)
+plot(proj_MID$xferArea, main = "MID时期QTP分布范围")
+
+MID <- terra::project(rast(proj_MID), elev, method = "bilinear")
+
+writeRaster(proj_MID$xferArea, "result/Maps/proj_MID.tif", overwrite=TRUE)
+
+
+```
+
+### Calculate Environmental Similarity —— MID
+```{r}
+# compare these values with the projection extent (envsMsk)
+proj.mess_MID <- dismo::mess(raster::stack(predsProj_MID), occEnvVals_seq, full = T)
+plot(proj.mess_MID, main = names(proj.mess_MID))
+```
+
+# Metadata
+
+小节要讨论的最后一点对所有科学研究都极为重要：可重复性。ENMeval 2.0.0现在在一个rangeModelMetadata对象中编列了对可重复性至关重要的分析细节，可从输出的ENMevaluation对象中访问。Merow等人（2019）描述了rangeModelMetadata背后的框架和理念，此后还出现了为ENM定义关键元数据标准和评级系统的其他相关工作（例如，Araújo等人2019，Feng等人2019，Zurell等人2020）。ENMeval生成的元数据可以保存到CSV文件中，以便与合作者分享或用于手稿的补充信息等。
+```{r}
+# 基于存储在ENMevaluate对象中的信息，生成一个rangeModelMetadata对象。
+rmm <- eval.rmm(e)
+# We can fill in the model selection rules based on the sequential criteria we chose.
+# 我们可以根据我们选择的顺序标准来填写模型选择规则。
+rmm$model$selectionRules <- "lowest 10 percentile omission rate, 
+break ties with average validation AUC"
+# We can also enter our optimal model settings and the details of our optimal 
+# model's prediction.
+# 我们还可以输入我们的最佳模型设置和我们的最佳 模型的预测细节。
+rmm$model$finalModelSettings <- opt.seq$tune.args
+rmm$prediction$continuous$minVal <- cellStats(pred_seq, min)
+rmm$prediction$continuous$maxVal <- cellStats(pred_seq, max)
+rmm$prediction$continuous$units <- "suitability (cloglog transformation)"
+# This is just an example -- there may be more fields relevant to fill in for your study.
+# 这只是一个例子 -- 可能有更多与你的研究有关的领域需要填写。
+# Finally, we can save the metadata to a CSV file.
+rangeModelMetadata::rmmToCSV(rmm, "result/log_text/YouSong_rmm_0418_1704.csv")
+```

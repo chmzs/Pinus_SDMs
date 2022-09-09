@@ -1,0 +1,412 @@
+---
+title: "使用flexSDM建模-RedFix_example"
+author:
+  - flexSDM
+  - Chmzs 学习
+keywords:
+  - RedFix example
+  - flexSDM
+  - SDM
+  - R Markdown
+date: "`r Sys.Date()`"
+documentclass: ctexart
+geometry: "left=2cm,right=2cm,top=2cm,bottom=2cm"
+output:
+  rticles::ctex:
+    pandoc_args: --listings
+    includes:
+      in_header: preamble.tex
+    df_print: kable
+    keep_tex: true
+    fig_caption: yes
+    number_sections: yes
+    toc: yes
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE,
+  warning = T,
+  tidy = T,
+  fig.align = "left",
+  fig.width = 8,
+  fig.showtext = TRUE
+)
+```
+# 预备
+## 加载包
+```{r}
+library(flexsdm)
+library(dplyr)
+library(terra)
+```
+
+
+## 项目目录设置
+```{r warning = F}
+dir.create("YouSong_flexSDM")
+
+project_directory <- sdm_directory(
+  main_dir = "YouSong_flexSDM",
+  projections = NULL,
+  calibration_area = TRUE,
+  algorithm = c("fit_max", "tune_raf"),
+  ensemble = c("mean"),
+  threshold = TRUE,
+  return_vector = TRUE
+)
+```
+
+# 研究物种和方法概述
+
+在这里，我们使用flexsdm包对加利福尼亚红杉 ( Abies magnifica )的当前分布进行建模。红杉是一种高海拔针叶树种，其地理范围从美国加利福尼亚州的内华达山脉延伸到俄勒冈州喀斯喀特山脉的南部。对于这个物种，我们使用了从自然资源机构策划的几个公共数据集中汇编的存在数据。我们使用四个水文气候变量建立了分布模型：实际蒸散量、气候水分亏缺、最热月份的最高温度和最冷月份的最低温度。所有变量都被重新采样（聚合）到 1890 米的空间分辨率，以缩短处理时间。
+
+# 校准区域的界定
+
+从方法学和理论上讲，划定校准区域（又称可访问区域）是SDMs的一个重要步骤。校准区域将影响SDM的几个特征，如环境变量的范围、缺失的数量、背景点和假缺失的分布，以及不幸的是，一些性能指标如AUC和TSS会随面积增大而偏大。 有几种方法可以划定一个校准区域。在calib_area()中。我们使用的方法是，校准区域由存在物周围100公里的缓冲区划定（如下图所示）。
+
+```{r}
+# ===============envs=======================
+# 设置terra缓存文件夹到更大的磁盘
+terra::terraOptions(tempdir = "Temp")
+
+bio_file <- list.files("datas/current_bio/Chelsa_30s", pattern = ".tif$", full.names = T, recursive = T)
+bio <- rast(bio_file[1:19]) # environmental data
+names(bio) <- paste0("bio", sprintf("%02d", 1:19))
+
+# crop the environmental rasters by the background extent shape
+int_g <- vect("datas/StudyArea/QTP_face_4326.geojson")
+int_p <- vect("datas/StudyArea/TPboundaryPolygon.shp")
+
+somevar <- crop(bio, int_g)
+# mask the background extent shape from the cropped raster
+somevar <- mask(somevar, int_g)
+
+# 用elev作为模板投影envs_int，统一分辨率; 连续变量使用双线性插值
+elev <- rast("datas/Terrains/wc2.1_30s_elev_Albert.tif")
+names(elev) <- elev
+somevar <- project(bio, elev, method = "bilinear")
+plot(somevar["bio01"])
+# somevar = bio
+# 本地存储与加载
+writeRaster(somevar, "YouSong_flexSDM/1_Inputs/2_Predictors/1_Current/chelsa_qtp_30s_albert.tif", overwrite = TRUE)
+somevar <- rast("YouSong_flexSDM/1_Inputs/2_Predictors/1_Current/chelsa_qtp_30s_albert.tif")
+
+# ===============occs=======================
+occs_p <- readr::read_csv("datas/Occs/Pinus_tabuliformis_gbif_origin.csv") # only for presence locations
+# 转化为sf矢量对象，便于地图加载, 指定crs
+occs_p_v <- vect(occs_p,  geom=c("longitude", "latitude"), crs="epsg:4326")
+occs_p_v <- intersect(occs_p_v, int_g)
+occs_p_v <- project(occs_p_v, crs(elev))
+occs_p <- as.data.frame(geom(occs_p_v))
+
+
+
+ca <-
+  calib_area(
+    data = occs_p,
+    x = "x",
+    y = "y",
+    method = c('bmcp', width=40000),
+    crs = crs(somevar)
+  ) # create a calibration area with 200 km buffer around occurrence points
+
+# visualize the species occurrences
+layer1 <- somevar[[1]]
+layer1[!is.na(layer1)] <- 1
+
+plot(layer1, col = "gray80", legend = FALSE, axes = FALSE)
+plot(crop(ca, layer1), add = TRUE)
+points(occs_p[, c("x", "y")], col = "#00000480")
+```
+
+# Occurrence filtering
+
+长期以来，物种发生数据的样本偏差是SDM中公认的一个问题。然而，观察数据的环境过滤可以通过减少环境（如气候）超空间中的冗余来改善模型预测（Varela等人，2014）。这里我们将使用函数 occfilt_env()来根据环境空间对红杉的出现进行稀释。这个函数是flexsdm独有的，与其他软件包相比，它能够使用任何数量的环境维度，并且在过滤之前不进行PCA。
+
+接下来，我们使用8个bin进行环境内occurrence 点位过滤，并显示过滤后的occurrence 数据
+
+```{r}
+occs_p$idd <- 1:nrow(occs_p) # adding unique id to each row
+occs_pf <- occs_p %>%
+  occfilt_geo(
+    data = .,
+    x = "x",
+    y = "y",
+    env_layer = somevar,
+    method = c('cellsize', factor = '1'),
+    prj = crs(somevar)
+  ) %>%
+  left_join(occs_p, by = c("idd", "x", "y"))
+
+plot(layer1, col = "gray80", legend = FALSE, axes = FALSE)
+plot(crop(ca, layer1), add = TRUE)
+points(occs_p[, c("x", "y")], col = "#00000480")
+points(occs_pf[, c("x", "y")], col = "#5DC86180")
+```
+# Create pseudo-absence data
+
+```{r}
+occs_pf$pr_ab <- 1
+# Sample the same number of species presences
+set.seed(10)
+psa <- sample_pseudoabs(
+  data = occs_pf,
+  x = "x",
+  y = "y",
+  n = sum(occs_pf$pr_ab), # selecting number of pseudo-absence points that is equal to number of presences
+  method = "random",
+  rlayer = somevar,
+  calibarea = ca
+)
+
+# Visualize species presences and pseudo-absences
+plot(
+  int_p,
+  col = "gray80",
+  legend = FALSE,
+  axes = FALSE,
+  xlim = c( -1106871, -30569.43),
+  ylim = c(2836236, 3990778),
+  main = "Presence = yellow, Pseudo-absence = black")
+plot(ca, add=TRUE)
+points(psa[,c("x", "y")], cex=0.8, pch=16, col = "black") # Pseudo-absences
+points(occs_pf[,c("x", "y")], col = "yellow", pch = 16, cex = 1.5) # Presences
+```
+```{r}
+# Bind a presences and pseudo-absences
+occs_pa <- bind_rows(occs_pf, psa)
+occs_pa # Presence-Pseudo-absence database
+```
+
+
+# Partition data for evaluating models
+
+数据分区，或将数据分成测试组和训练组，是构建SDM的关键步骤。 flexsdm提供了多种数据分区选项，这里我们使用空间块方法。如果用户想评估模型在不同地区或时间段的可转移性，地理结构的数据分区方法特别有用。part_sblock()函数探索了具有不同光栅单元大小的空间块，并根据空间自相关、环境相似性和每个块分区中存在/不存在记录的数量，返回最适合输入数据集的空间块。该函数的输出为用户提供： - 1）一个包含存在/缺失位置和分配的分区号的tibble， - 2）一个包含最佳分区信息的tibble，以 - 3）一个显示选定网格的SpatRaster。 在这里，我们想用空间块的方法将数据分成4个不同的分区。
+
+```{r}
+set.seed(10)
+# Repeated K-fold method
+occs_pa2 <- part_random(
+  data = occs_pa,
+  pr_ab = "pr_ab",
+  method = c(method = "rep_kfold", folds = 4, replicates = 8)
+)
+
+```
+
+提取分布-伪不分布和背景数据的环境数据。使用块作为参考地图查看当前分布点、伪不分布点和背景点的分布。
+
+```{r}
+occs_pa3 <- occs_pa2 %>%
+  sdm_extract(
+    data = .,
+    x = "x",
+    y = "y",
+    env_layer = somevar,
+    variables = c(names(somevar)),
+    filter_na = TRUE
+  )
+
+```
+
+# Fit models with tune_max, fit_gau, and third one
+
+现在，拟合我们的模型。flexsdm软件包提供了广泛的建模选项，从传统的统计方法如GLMs和GAMs，到机器学习方法如最大熵值法、随机森林和支持向量机。对于每一种建模方法，flexsdm都提供了fit\_\*和tune\_\*函数，允许用户根据他们的研究目标使用默认设置或调整超参数。
+在此，我们将测试tune_max()（调整最大熵模型参数），fit_gau()（适合高斯过程模型），以及fit_glm（适合广义线性模型）。对于每个模型，我们选择了三个阈值来生成二元适合性预测：
+- 使TSS最大化的阈值（max_sens_spec），
+- 敏感性和特异性相等的阈值（equal_sens_spec），以及
+- Sorenson指数最高的阈值（max_sorenson）。
+在这个例子中，我们选择TSS作为性能指标，用于选择调整后的最大熵模型中超参数值的最佳组合。
+```{r}
+mglm <- fit_glm(
+    data = occs_pa3,
+    response = 'pr_ab',
+    predictors = c(names(somevar)),
+    partition = '.part',
+    thr = 'max_sens_spec'
+  )
+
+mgbm <- fit_gbm(
+  data = occs_pa3,
+  response = 'pr_ab',
+  predictors = c(names(somevar)),
+  partition = '.part',
+  thr = 'max_sens_spec'
+)
+
+msvm <-  fit_svm(
+  data = occs_pa3,
+  response = 'pr_ab',
+  predictors = c(names(somevar)),
+  partition = '.part',
+  thr = 'max_sens_spec'
+)
+
+mmax <- fit_max(
+  data = occs_pa3,
+  response = 'pr_ab',
+  predictors = c(names(somevar)),
+  partition = '.part',
+  thr = 'max_sens_spec',
+  classes = "default",
+  pred_type = "cloglog",
+  regmult = 1:5
+)
+
+mpred <- sdm_predict(
+  models = list(mglm, mgbm, msvm, mmax),
+  pred = somevar,
+  con_thr = TRUE,
+  predict_area = ca
+)
+plot(rast(mpred))
+```
+# 小型模型的集合
+现在，让我们使用 ESM 方法尝试这些算法中的每一种。请注意，在预测 ESM 时，一次只能处理一个 ESM。
+```{r}
+eglm  <- esm_glm(
+    data = occs_pa3,
+    response = 'pr_ab',
+    predictors = c(names(somevar)),
+    partition = '.part',
+    thr = 'max_sens_spec'
+  )
+
+egbm <- esm_gbm(
+    data = occs_pa3,
+    response = 'pr_ab',
+    predictors = c(names(somevar)),
+    partition = '.part',
+    thr = 'max_sens_spec'
+)
+
+esvm <-  esm_svm(
+    data = occs_pa3,
+    response = 'pr_ab',
+    predictors = c(names(somevar)),
+    partition = '.part',
+    thr = 'max_sens_spec'
+)
+
+emax <- esm_max(
+  data = occs_pa3,
+  response = 'pr_ab',
+  predictors = c(names(somevar)),
+  partition = '.part',
+  thr = 'max_sens_spec',
+  classes = "default",
+  pred_type = "cloglog",
+  regmult = 1:5
+)
+```
+
+```{r}
+eglm_pred <- sdm_predict(
+  models = eglm ,
+  pred = somevar,
+  con_thr = TRUE,
+  predict_area = ca
+)
+#> Predicting ensemble of small models
+
+egbm_pred <- sdm_predict(
+  models = egbm ,
+  pred = somevar,
+  con_thr = TRUE,
+  predict_area = ca
+)
+#> Predicting ensemble of small models
+
+esvm_pred <- sdm_predict(
+  models = esvm,
+  pred = somevar,
+  con_thr = TRUE,
+  predict_area = ca
+)
+
+emax_pred <- sdm_predict(
+  models = emax,
+  pred = somevar,
+  con_thr = TRUE,
+  predict_area = ca
+)
+```
+
+
+```{r}
+par(mfrow = c(4, 2))
+plot(mpred$glm, main = 'Standard GLM')
+#points(hespero$x, hespero$y, pch = 19)
+plot(eglm_pred[[1]], main = 'ESM GLM')
+#points(hespero$x, hespero$y, pch = 19)
+plot(mpred$gbm, main = 'Standard GBM')
+#points(hespero$x, hespero$y, pch = 19)
+plot(egbm_pred[[1]], main = 'ESM GBM')
+#points(hespero$x, hespero$y, pch = 19)
+plot(mpred$svm, main = 'Standard SVM')
+#points(hespero$x, hespero$y, pch = 19)
+plot(esvm_pred[[1]], main = 'ESM SVM')
+plot(mpred$max, main = 'Standard MaxEnt')
+#points(hespero$x, hespero$y, pch = 19)
+plot(emax_pred[[1]], main = 'ESM MaxEnt')
+```
+接下来，我们查看模型的一些性能指标，这些指标基于我们重复的 k 叠交叉验证分区方法。这可以使用flexsdm中的“sdm_summarize（）”函数轻松完成。在这里，我们可以看到，ESM的AUC，TSS和Jaccard指数高于其相应的标准模型。但是，对于标准模型，Boyce指数和逆均值绝对误差略高。
+```{r}
+merge_df <- sdm_summarize(models = list(mglm, mgbm, msvm, mmax, eglm, egbm, esvm, emax))
+
+knitr::kable(
+  merge_df %>% dplyr::select(
+    model,
+    AUC = AUC_mean,
+    TSS = TSS_mean,
+    JACCARD = JACCARD_mean,
+    BOYCE = BOYCE_mean,
+    IMAE = IMAE_mean
+  )
+)
+```
+
+
+# 投射迁移集成模型
+接下来，我们使用 sdm_predict() 函数将集成模型投影到整个环境层（加利福尼亚植物区）的空间中。此功能可用于预测任何区域的物种适宜性，以了解物种当前或未来的适宜性。在这个例子中，我们只用一个阈值投影集成模型，尽管用户可以选择用多个阈值投影多个模型。在这里，我们还指定希望该函数返回一个具有高于阈值的连续适宜性值的SpatRast（con_thr = TRUE）。
+```{r}
+pr_1 <- sdm_predict(
+  models = egbm,
+  pred = somevar,
+  thr = "max_sens_spec",
+  con_thr = T,
+  predict_area = int_p
+)
+
+unconstrained <- pr_1$meanw[[1]]
+names(unconstrained) <- "unconstrained"
+
+cl <- c("#FDE725", "#B3DC2B", "#6DCC57", "#36B677", "#1F9D87", "#25818E", "#30678D", "#3D4988", "#462777", "#440154")
+plot(unconstrained, col = cl, legend = FALSE, axes = FALSE)
+```
+# 使用 msdm_posterior 约束模型
+最后，flexsdm为用户提供功能，帮助纠正基于分布点位记录和适宜性模式的SDM的过度预测。在这个例子中，我们使用 "基于分布点的限制 "的方法来约束集合模型，该方法假设拦截物种发生的适宜斑块比没有拦截任何发生的适宜斑块更可能是物种分布的一部分。
+由于msdm_posteriori()函数的所有方法都是针对分布点的，因此必须始终使用原始数据库（即没有经过空间或环境过滤的存在）。msdm_posteriori()函数中的所有方法都是基于Mendes et al.(2020)的研究。
+```{r}
+thr_val <- ens_m$performance %>%
+  dplyr::filter(threshold == "max_sens_spec") %>%
+  pull(thr_value)
+m_pres <- msdm_posteriori(
+  records = occs_p,
+  x = "x",
+  y = "y",
+  pr_ab = "pr_ab",
+  cont_suit = pr_1$meanw[[1]],
+  method = c("obr"),
+  thr = c("sensitivity", sens = thr_val),
+  buffer = NULL
+)
+
+constrained <- m_pres$meanw[[1]]
+names(constrained) <- "constrained"
+
+cl <- c("#FDE725", "#B3DC2B", "#6DCC57", "#36B677", "#1F9D87", "#25818E", "#30678D", "#3D4988", "#462777", "#440154")
+plot(constrained, col = cl, legend = FALSE, axes = FALSE)
+```
+
