@@ -1,0 +1,142 @@
+<eml:eml xmlns:eml="eml://ecoinformatics.org/eml-2.1.1"
+         xmlns:dc="http://purl.org/dc/terms/"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="eml://ecoinformatics.org/eml-2.1.1 http://rs.gbif.org/schema/eml-gbif-profile/1.0.2/eml.xsd"
+         packageId="f9336171-e9a9-4147-b9f6-2d6c133afffd/v5" system="http://gbif.org" scope="system"
+         xml:lang="eng">
+
+<dataset>
+  <alternateIdentifier>f9336171-e9a9-4147-b9f6-2d6c133afffd</alternateIdentifier>
+  <alternateIdentifier>http://www.gbifchina.org:8080/gbifcas/resource.do?r=leftcvh1900-1950</alternateIdentifier>
+  <title xml:lang="eng">Some Plant Specimens from PE Herbarium in China from 1900 to 1950</title>
+<creator>
+    <individualName>
+        <givenName>Xianchun</givenName>
+      <surName>Zhang</surName>
+    </individualName>
+    <organizationName>Herbarium (PE),Institute of Botany, Chinese Academy of Sciences</organizationName>
+    <positionName>Director</positionName>
+    <address>
+        <deliveryPoint>No. 20, Nanxincun, Xiangshan, Haidian District</deliveryPoint>
+        <administrativeArea>Beijing</administrativeArea>
+        <postalCode>100093</postalCode>
+        <country>CN</country>
+    </address>
+    <phone>86-10-62836291</phone>
+    <electronicMailAddress>zhangxc@ibcas.ac.cn</electronicMailAddress>
+    <onlineUrl>http://sourcedb.ib.cas.cn/cn/expert/201212/t20121209_3702157.html</onlineUrl>
+</creator>
+<metadataProvider>
+    <individualName>
+        <givenName>Xianchun</givenName>
+      <surName>Zhang</surName>
+    </individualName>
+    <organizationName>Institute of Botany, Chinese Academy of Sciences</organizationName>
+    <positionName>Engineer</positionName>
+    <address>
+        <deliveryPoint>No. 20, Nanxincun, Xiangshan, Haidian District</deliveryPoint>
+        <administrativeArea>Beijing</administrativeArea>
+        <postalCode>100093</postalCode>
+        <country>CN</country>
+    </address>
+    <phone>86-10-62836024</phone>
+    <electronicMailAddress>xuzp@ibcas.ac.cn</electronicMailAddress>
+</metadataProvider>
+    <associatedParty>
+    <individualName>
+        <givenName>Xianchun</givenName>
+      <surName>Zhang</surName>
+    </individualName>
+    <organizationName>Institute of Botany, Chinese Academy of Sciences</organizationName>
+    <positionName>Engineer</positionName>
+    <address>
+        <deliveryPoint>No. 20, Nanxincun, Xiangshan, Haidian District</deliveryPoint>
+        <administrativeArea>Beijing</administrativeArea>
+        <postalCode>100093</postalCode>
+        <country>CN</country>
+    </address>
+    <phone>86-10-62836024</phone>
+    <electronicMailAddress>xuzp@ibcas.ac.cn</electronicMailAddress>
+    <role>contentProvider</role>
+    </associatedParty>
+<pubDate>
+      	2016-09-06
+</pubDate>
+<language>chi</language>
+<abstract>
+  <para>Some Plant Specimens from PE Herbarium in China from 1900 to 1950</para>
+</abstract>
+      <keywordSet>
+            <keyword>Occurrence</keyword>
+        <keywordThesaurus>GBIF Dataset Type Vocabulary: http://rs.gbif.org/vocabulary/gbif/dataset_type.xml</keywordThesaurus>
+      </keywordSet>
+      <keywordSet>
+            <keyword>Specimen</keyword>
+        <keywordThesaurus>GBIF Dataset Subtype Vocabulary: http://rs.gbif.org/vocabulary/gbif/dataset_subtype.xml</keywordThesaurus>
+      </keywordSet>
+  <distribution scope="document">
+    <online>
+      <url function="information">http://pe.ibcas.ac.cn</url>
+    </online>
+  </distribution>
+  <coverage>
+      <geographicCoverage>
+          <geographicDescription> Some Plant Specimens from PE Herbarium in China from 1900 to 1950</geographicDescription>
+        <boundingCoordinates>
+          <westBoundingCoordinate>73.499</westBoundingCoordinate>
+          <eastBoundingCoordinate>134.78</eastBoundingCoordinate>
+          <northBoundingCoordinate>53.561</northBoundingCoordinate>
+          <southBoundingCoordinate>3.582</southBoundingCoordinate>
+        </boundingCoordinates>
+      </geographicCoverage>
+          <temporalCoverage>
+              <rangeOfDates>
+                  <beginDate>
+                    <calendarDate>1900-01-01</calendarDate>
+                  </beginDate>
+                <endDate>
+                  <calendarDate>1949-12-31</calendarDate>
+                </endDate>
+              </rangeOfDates>
+          </temporalCoverage>
+          <taxonomicCoverage>
+              <taxonomicClassification>
+                <taxonRankValue></taxonRankValue>
+              </taxonomicClassification>
+          </taxonomicCoverage>
+  </coverage>
+  <contact>
+    <individualName>
+        <givenName>Xianchun</givenName>
+      <surName>Zhang</surName>
+    </individualName>
+    <organizationName>Herbarium (PE),Institute of Botany, Chinese Academy of Sciences</organizationName>
+    <positionName>Director</positionName>
+    <address>
+        <deliveryPoint>No. 20, Nanxincun, Xiangshan, Haidian District</deliveryPoint>
+        <administrativeArea>Beijing</administrativeArea>
+        <postalCode>100093</postalCode>
+        <country>CN</country>
+    </address>
+    <phone>86-10-62836291</phone>
+    <electronicMailAddress>zhangxc@ibcas.ac.cn</electronicMailAddress>
+    <onlineUrl>http://sourcedb.ib.cas.cn/cn/expert/201212/t20121209_3702157.html</onlineUrl>
+  </contact>
+  <methods>
+        <methodStep>
+          <description>
+            <para></para>
+          </description>
+        </methodStep>
+  </methods>
+</dataset>
+  <additionalMetadata>
+    <metadata>
+      <gbif>
+          <dateStamp>2016-09-06T01:14:49.458+08:00</dateStamp>
+          <hierarchyLevel>dataset</hierarchyLevel>
+          <dc:replaces>f9336171-e9a9-4147-b9f6-2d6c133afffd/v4.xml</dc:replaces>
+      </gbif>
+    </metadata>
+  </additionalMetadata>
+</eml:eml>
