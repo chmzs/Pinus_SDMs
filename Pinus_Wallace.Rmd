@@ -61,28 +61,28 @@ library(ggplot2)
 # 加载Occs数据
 
 ```{r 加载occs}
-# 提取物种、经度、纬度列
-occs <- fread("datas/Occs/Pinus_data_coordinate_check.csv") %>%
-  select(scientificName.new.TPL.y, longitude.x, latitude.x) %>%
-  rename(
-    scientific_name = scientificName.new.TPL.y,
-    longitude = longitude.x,
-    latitude = latitude.x
-  )
-
-# 保存上述的物种数据
-fwrite(occs,
-  "datas/Occs/Pinus_data_coordinate_check_wallace.csv",
-  na = "NA"
-)
+# # 提取物种、经度、纬度列
+# occs <- fread("datas/Occs/new_QTP/13_Pinus_data_coordinate_check.csv") %>%
+#   select(scientificName.new.TPL.y, longitude.x, latitude.x) %>%
+#   rename(
+#     scientific_name = scientificName.new.TPL.y,
+#     longitude = longitude.x,
+#     latitude = latitude.x
+#   )
+# 
+# # 保存上述的物种数据
+# fwrite(occs,
+#   "datas/Occs/Pinus_data_coordinate_check_wallace.csv",
+#   na = "NA"
+# )
 ```
 
 ```{r 分物种Occs}
 # wallace加载occs
 # 返回结果仅包含具有坐标的记录的子集，删除具有重复坐标的记录，并选择具有适合生物地理学研究的字段的一些列。
 Occs <- occs_userOccs(
-  txtPath = "datas/Occs/Pinus_data_coordinate_check_wallace.csv",
-  txtName = "Pinus_data_coordinate_check_wallace.csv",
+  txtPath = "datas/Occs/new_QTP/00_Pinus_data_combine_wallace.csv",
+  txtName = "00_Pinus_data_combine_wallace",
   txtSep = ",",
   txtDec = "."
 )
@@ -101,35 +101,35 @@ occs_Py <- Occs$Pinus_yunnanensis$cleaned
 ### 获取古生物记录Occs
 
 ```{r, eval = FALSE, include = FALSE}
-# Query selected database for occurrence records
-paleoDb_Py <- occs_paleoDb(
-  spName = "Pinus yunnanensis",
-  occNum = 55,
-  timeInterval = ""
-)
-occs_Py <- paleoDb_Py$cleaned
+# # Query selected database for occurrence records
+# paleoDb_Py <- occs_paleoDb(
+#   spName = "Pinus yunnanensis",
+#   occNum = 55,
+#   timeInterval = ""
+# )
+# occs_Py <- paleoDb_Py$cleaned
 ```
 
 # 获取ENvs
 
 ```{r 在线envs}
-# geodata::worldclim_global(var = "bio", res = 10, path="datas/current_bio")
-# 新文件重命名
-# bio_file <- list.files("datas/current_bio/wc2.1_10m/", pattern = ".tif$", full.names = T, recursive = T)
+# geodata::worldclim_global(var = "bio", res = 2.5, path="datas/current_bio")
+# # 新文件重命名
+# bio_file <- list.files("datas/Paleo_bio/cclgmbi_2-5m/", pattern = ".tif$", full.names = T, recursive = T)
 # for (i in 1:length(bio_file)){
-#   newname <- paste0("datas/current_bio/wc2.1_10m/",
-#                     "wc2.1_10m_",
-#                     c("bio01", 
-#                       paste0("bio", 10:19), 
-#                       paste0("bio", sprintf("%02d", 2:9))), 
-#                     ".tif") 
+#   newname <- paste0("datas/Paleo_bio/cclgmbi_2-5m/",
+#                     "cc_lgm_2-5m_",
+#                     c("bio01",
+#                       paste0("bio", 10:19),
+#                       paste0("bio", sprintf("%02d", 2:9))),
+#                     ".tif")
 #   file.rename(bio_file[i], newname[i])
 # }
 
 ```
 
 ```{r 本地加载envs}
-# 本地加载19个生物气候变量
+## 本地加载19个生物气候变量
 # bio_file <- list.files("datas/current_bio/Chelsa_30s/", pattern = ".tif$", full.names = T, recursive = T)
 # 
 # for (i in 1:length(bio_file)){
@@ -139,12 +139,39 @@ occs_Py <- paleoDb_Py$cleaned
 #   terra::writeRaster(envs, newname[i], overwrite=TRUE)
 # }
 
-bio_file <- list.files("datas/current_bio/Chelsa_30s/RasterEnvs/", pattern = ".tif$", full.names = T, recursive = T)
+bio_file <- list.files("datas/current_bio/wc2.1_2.5m_bio/", pattern = ".tif$", full.names = T, recursive = T)
 
 envs <- bio_file %>%
-  terra::rast() %>% 
   raster::stack()
 names(envs) <- paste0('bio', sprintf("%02d", 1:19))
+```
+
+
+```{r}
+mid_file <- list.files("datas/Paleo_bio/ccmidbi_2-5m/", pattern = ".tif$", full.names = T, recursive = T)
+
+mid <- mid_file %>%
+  raster::stack()
+names(mid) <- paste0('bio', sprintf("%02d", 1:19))
+
+bio_file <- list.files("datas/Paleo_bio/ccmidbi_2-5m/", pattern = ".tif$", full.names = T, recursive = T)
+for (i in 1:length(bio_file)){
+  newname <- paste0("datas/Paleo_bio/ccmidbi_2-5m_pca/",
+                    paste0("bio", sprintf("%02d", 1:19)),
+                    ".tif")
+  file.rename(bio_file[i], newname[i])
+}
+
+library(flexsdm)
+library(terra)
+var <- correct_colinvar(env_layer = envs, 
+                        method = "pca", 
+                        proj = "datas/Paleo_bio/ccmidbi_2-5m_pca/")
+var$env_layer
+var$number_factors
+var$removed_variables
+var$uniqueness
+var$loadings
 ```
 
 
@@ -222,17 +249,17 @@ occs_Py <- cbind(occs_Py, occs_vals_Py)
 # Thin occurrences to （大于分辨率的）km
 occs_Pa <- poccs_thinOccs(
   occs = occs_Pa,
-  thinDist = 1
+  thinDist = 5
 )
 
 occs_Pd <- poccs_thinOccs(
   occs = occs_Pd,
-  thinDist = 1
+  thinDist = 5
 )
 
 occs_Py <- poccs_thinOccs(
   occs = occs_Py,
-  thinDist = 1
+  thinDist = 5
 )
 ```
 
@@ -243,7 +270,7 @@ occs_Py <- poccs_thinOccs(
 bgExt_Pa <- penvs_bgExtent(
   occs = occs_Pa,
   bgSel = "point buffers",
-  bgBuf = 0.1
+  bgBuf = 1
 ) # 单位为十进制dd,1°大概是120公里
 # Mask environmental data to provided extent
 bgMask_Pa <- penvs_bgMask(
@@ -255,7 +282,7 @@ bgMask_Pa <- penvs_bgMask(
 bgSample_Pa <- penvs_bgSample(
   occs = occs_Pa,
   bgMask = bgMask_Pa,
-  bgPtsNum = 1000
+  bgPtsNum = 30000
 )
 
 # Extract values of environmental layers for each background point
@@ -278,7 +305,7 @@ points(occs_xy_Pa, pch = 3, col = "red")
 bgExt_Pd <- penvs_bgExtent(
   occs = occs_Pd,
   bgSel = "point buffers",
-  bgBuf = 2
+  bgBuf = 1
 )
 # Mask environmental data to provided extent
 bgMask_Pd <- penvs_bgMask(
@@ -290,7 +317,7 @@ bgMask_Pd <- penvs_bgMask(
 bgSample_Pd <- penvs_bgSample(
   occs = occs_Pd,
   bgMask = bgMask_Pd,
-  bgPtsNum = 10000
+  bgPtsNum = 30000
 )
 
 # Extract values of environmental layers for each background point
@@ -400,6 +427,11 @@ groups_Pd <- part_partitionOccs(
   method = "block",
   kfolds = # 只能分4组
   )
+
+## 绘制分组图
+ggplot(data = cbind(occs_Pd, groups_Pd$occs.grp), 
+       aes(longitude, latitude)) +
+  geom_point(colour = groups_Pd$occs.grp, size = 3)
 ```
 
 ```{r Pa spat_part_cb2}
@@ -501,16 +533,19 @@ ENMeval::eval.occs(model_Pa) %>% head()
 ```
 
 ```{r}
-model_Pa@results
+View(model_Pa@results)
 model_Pa@results.partitions
 ```
+
+
 Pa模型参数选择了`r opt_seq_Pa$tune.args`
 ```{r 模型选择指标}
 opt_seq_Pa <- model_Pa@results %>%
   filter(or.10p.avg == min(or.10p.avg)) %>%
   filter(auc.val.avg == max(auc.val.avg)) %>%
   filter(delta.AICc < 2)
-opt_seq_Pa
+opt_seq_Pa <- model_Pa@results %>% 
+  filter(tune.args == "fc.LQH_rm.4")
 
 opt_seq_Pd <- model_Pd@results %>%
   filter(or.10p.avg == min(or.10p.avg)) %>%
@@ -577,7 +612,7 @@ m_Pa$betas # Pa模型中的非零系数
 
 ```{r 响应曲线maxnet}
 # Pa模型中系数不为零的预测变量的边际响应曲线。我们将y轴定义为cloglog转换，它是由0和1约束的发生概率的近似值（有假设）(Phillips et al. 2017)。
-plot(mod_seq_Pa, type = "cloglog")
+plot(m_Pa, type = "cloglog")
 ```
 
 ```{r}
@@ -923,7 +958,7 @@ xferExt和xferArea。第一个是一个RasterBrick或一个RasterStack的环境�
 # Transfer model
 xfer_area_Pa <- xfer_area(
   evalOut = model_Pa,
-  curModel = "fc.L_rm.1",
+  curModel = opt_seq_Pa$tune.args[1],
   envs = envs,
   xfExt = xferExt,
   alg = "maxnet",
@@ -1015,7 +1050,7 @@ m %>%
   clearShapes() %>%
   removeImage("xferRas") %>%
   addRasterImage(xfer_area_Pa,
-    colors = rasPal_Py, opacity = 0.7,
+    colors = rasPal_Pa, opacity = 0.7,
     layerId = "xferRas", group = "xfer", method = "ngb"
   ) %>%
   ## add transfer polygon (user drawn area)
@@ -1094,18 +1129,18 @@ m %>%
 Transferring the model to the same modelling area with no threshold rule. New time based on "WorldClim 1.4" variables for 1960 to 1990 using a "" GCM and a "" scenario.
 
 ```{r xfer_MID}
-# Download data from ecoClimate for transferring
-xferTimeEnvs_Pa <- envs_ecoClimate(
-  "MIROC",
-  "Holo",
-  as.numeric(gsub("bio", "", names(bgMask_Pa)))
-)
+
+mid_file <- list.files("datas/Paleo_bio/cclgmbi_2-5m/", pattern = ".tif$", full.names = T, recursive = T)
+
+mid <- mid_file %>%
+  raster::stack()
+names(mid) <- paste0('bio', sprintf("%02d", 1:19))
 
 # Generate a transfer of the model to the desired area and time
 xfer_time_Pa <- xfer_time(
   evalOut = model_Pa,
-  curModel = "fc.L_rm.1",
-  envs = xferTimeEnvs_Pa,
+  curModel = opt_seq_Pa$tune.args[1],
+  envs = mid,
   xfExt = xferExt,
   alg = "maxnet",
   outputType = "cloglog",
